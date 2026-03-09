@@ -165,7 +165,6 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
             style(config.worker_count).bold()
         ));
 
-        screen.divider();
         screen.begin_progress(strategies.len() as u64);
 
         let (results, stats) = run_parallel(
@@ -180,7 +179,6 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
         .await;
 
         screen.finish_progress();
-        screen.divider();
 
         let working: Vec<Vec<String>> = results
             .iter()

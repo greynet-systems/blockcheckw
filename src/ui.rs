@@ -113,6 +113,7 @@ pub fn stats_line(
 /// so progress bars and vanilla output never interleave.
 pub struct ScanScreen {
     multi: MultiProgress,
+    divider_bar: Option<ProgressBar>,
     pb: Option<ProgressBar>,
 }
 
@@ -120,6 +121,7 @@ impl ScanScreen {
     pub fn new() -> Self {
         Self {
             multi: MultiProgress::new(),
+            divider_bar: None,
             pb: None,
         }
     }
@@ -134,14 +136,14 @@ impl ScanScreen {
         let _ = self.multi.println("");
     }
 
-    /// Print a full-width `──────────` divider in dim style.
-    pub fn divider(&self) {
-        let width = Term::stdout().size().1 as usize;
-        let _ = self.multi.println(format!("{}", style("─".repeat(width)).dim()));
-    }
-
-    /// Create and show a progress bar with the given total.
+    /// Create divider + progress bar and add both to `MultiProgress`.
+    /// The divider is a fixed `─────` line that stays above the progress bar.
     pub fn begin_progress(&mut self, total: u64) {
+        let width = Term::stdout().size().1 as usize;
+        let divider = self.multi.add(ProgressBar::new(0));
+        divider.set_style(ProgressStyle::with_template("{msg}").unwrap());
+        divider.set_message(format!("{}", style("─".repeat(width)).dim()));
+
         let pb = ProgressBar::new(total);
         pb.set_style(
             ProgressStyle::with_template(
@@ -152,13 +154,18 @@ impl ScanScreen {
         );
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         let pb = self.multi.add(pb);
+
+        self.divider_bar = Some(divider);
         self.pb = Some(pb);
     }
 
-    /// Finish and clear the progress bar.
+    /// Finish and clear both the progress bar and the divider.
     pub fn finish_progress(&mut self) {
         if let Some(pb) = self.pb.take() {
             pb.finish_and_clear();
+        }
+        if let Some(div) = self.divider_bar.take() {
+            div.finish_and_clear();
         }
     }
 
