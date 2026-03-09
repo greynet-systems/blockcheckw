@@ -1,36 +1,8 @@
 # Blockcheck Wrapper
 
-**64 стратегии за 2.4 секунды** вместо 72 — ускорение в ~30x.
-
 **blockcheckw** — параллельный сканер стратегий обхода DPI. Переписан с `bash` на `Rust`.
 Оригинальный `blockcheck2.sh` проверяет стратегии последовательно — одну за другой.
 `blockcheckw` запускает их параллельно, изолируя воркеры через выделенные диапазоны портов.
-
-## Производительность
-
-Результаты нагрузочного теста — 64 стратегии `--dpi-desync=fake` с TTL 1..64:
-
-| Workers | Время | Throughput | Ускорение |
-|--------:|------:|-----------:|----------:|
-| 1       | 72.1s |  0.9/sec   |     1.0x  |
-| 2       | 36.8s |  1.7/sec   |     2.0x  |
-| 4       | 19.5s |  3.3/sec   |     3.7x  |
-| 8       | 10.4s |  6.2/sec   |     6.9x  |
-| 16      |  6.1s | 10.5/sec   |    11.8x  |
-| 32      |  3.5s | 18.3/sec   |    20.6x  |
-| **64**  |**2.4s**|**27.1/sec**| **30.5x** |
-| 128     |  2.8s | 22.7/sec   |    25.6x  |
-
-Масштабирование почти линейное до 64 воркеров. На 128 начинается overhead от количества nfqws2-процессов.
-0 ошибок на всех масштабах. Все nfqws2-процессы и nftables-правила корректно очищаются.
-
-### Тестовый стенд
-
-- **Роутер**: FriendlyElec NanoPi R3S
-- **CPU**: 4x ARM Cortex-A53
-- **RAM**: 2 GB
-- **OS**: OpenWrt 25.12, kernel 6.12
-- **Бинарник**: статически слинкованный `aarch64-unknown-linux-musl`, 2.6 MB
 
 ## Как это работает
 
@@ -40,6 +12,18 @@
 - Свой экземпляр nfqws2 на выделенной NFQUEUE
 
 Это позволяет запускать десятки стратегий одновременно без конфликтов.
+
+### Pipeline команды scan
+
+```
+DNS resolve → Baseline → Generate strategies → Run parallel → Summary
+```
+
+1. **DNS resolve** — резолвит домен через `getent ahostsv4`, fallback на `nslookup`
+2. **Baseline** — проверяет каждый протокол без bypass (curl без `--local-port`), определяет заблокированные
+3. **Generate** — генерирует все стратегии для заблокированных протоколов (2449 HTTP / 9828 TLS1.3 / 19644 TLS1.2)
+4. **Run parallel** — прогоняет стратегии параллельно через worker pool
+5. **Summary** — выводит найденные рабочие стратегии
 
 ## Сборка
 
@@ -55,10 +39,11 @@ scp target/aarch64-unknown-linux-musl/release/blockcheckw root@router:/tmp/
 
 ## Тесты
 
-### Unit-тесты (парсинг handle, CurlVerdict, WorkerSlot)
+### Unit-тесты
 ```shell
 cargo test --lib
 ```
+
 ### Бенчмарк: автоопределение оптимального числа воркеров
 
 ```shell
@@ -123,6 +108,80 @@ blockcheckw benchmark -s 128 -M 256
 # Для парсинга скриптом
 blockcheckw benchmark --raw
 ```
+
+## Запуск
+
+### Scan — поиск рабочих стратегий
+
+```shell
+blockcheckw scan
+```
+
+По умолчанию сканирует `rutracker.org` по всем трём протоколам (HTTP, TLS1.2, TLS1.3).
+Количество воркеров задаётся глобальным флагом `-w`.
+
+```
+=== DNS resolve ===
+resolved rutracker.org -> 172.67.182.217
+
+=== Baseline (without bypass) ===
+  HTTP: BLOCKED (UNAVAILABLE code=28)
+  HTTPS/TLS1.2: BLOCKED (UNAVAILABLE code=28)
+  HTTPS/TLS1.3: available without bypass
+
+Blocked protocols: HTTP, HTTPS/TLS1.2
+
+=== Scanning HTTP ===
+  generated 2449 strategies, workers=64
+  ...
+  completed: 2449 | success: 12 | failed: 2437 | errors: 0 | 114.3s (21.4 strat/sec)
+
+=== Summary for rutracker.org ===
+  HTTPS/TLS1.3: working without bypass
+  HTTP: 12 working strategies found
+    nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:ip_ttl=4:repeats=1
+    ...
+  HTTPS/TLS1.2: no working strategies found
+```
+
+**Флаги:**
+
+| Флаг | Описание | По умолчанию |
+|:-----|:---------|:-------------|
+| `-d` / `--domain` | Домен для проверки | `rutracker.org` |
+| `-p` / `--protocols` | Протоколы через запятую: `http`, `tls12`, `tls13` | `http,tls12,tls13` |
+
+**Примеры:**
+
+```shell
+# Только HTTP с 64 воркерами
+blockcheckw -w 64 scan -p http
+
+# Конкретный домен, только TLS
+blockcheckw -w 32 scan -d example.com -p tls12,tls13
+
+# Все протоколы (по умолчанию)
+blockcheckw -w 64 scan
+```
+
+## Производительность
+
+Результаты нагрузочного теста — 1000 стратегий, NanoPi R3S:
+
+| Workers | Время | Throughput | Ускорение |
+|--------:|------:|-----------:|----------:|
+| 1       | ~17m  |  ~1.0/sec  |     1.0x  |
+| **64**  |**46.7s**|**21.4/sec**| **~21x** |
+
+Масштабирование почти линейное до 64 воркеров. 0 ошибок.
+
+### Тестовый стенд
+
+- **Роутер**: FriendlyElec NanoPi R3S
+- **CPU**: 4x ARM Cortex-A53
+- **RAM**: 2 GB
+- **OS**: OpenWrt 25.12, kernel 6.12
+- **Бинарник**: статически слинкованный `aarch64-unknown-linux-musl`, 2.6 MB
 
 ## Зависимости
 

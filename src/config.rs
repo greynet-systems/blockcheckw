@@ -37,6 +37,10 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    pub fn all() -> Vec<Protocol> {
+        vec![Protocol::Http, Protocol::HttpsTls12, Protocol::HttpsTls13]
+    }
+
     pub fn port(self) -> u16 {
         match self {
             Protocol::Http => 80,
@@ -70,4 +74,64 @@ pub fn detect_nfqws2_path(zapret_base: &str) -> String {
         _ => "linux-x86_64",
     };
     format!("{zapret_base}/binaries/{binary_arch}/nfqws2")
+}
+
+pub fn parse_protocols(s: &str) -> Result<Vec<Protocol>, String> {
+    let mut protocols = Vec::new();
+    for token in s.split(',') {
+        let token = token.trim();
+        let protocol = match token {
+            "http" => Protocol::Http,
+            "tls12" => Protocol::HttpsTls12,
+            "tls13" => Protocol::HttpsTls13,
+            _ => return Err(format!("unknown protocol: '{token}'. expected: http, tls12, tls13")),
+        };
+        protocols.push(protocol);
+    }
+    if protocols.is_empty() {
+        return Err("no protocols specified".to_string());
+    }
+    Ok(protocols)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_protocols_all() {
+        let result = parse_protocols("http,tls12,tls13").unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], Protocol::Http);
+        assert_eq!(result[1], Protocol::HttpsTls12);
+        assert_eq!(result[2], Protocol::HttpsTls13);
+    }
+
+    #[test]
+    fn test_parse_protocols_single() {
+        let result = parse_protocols("tls13").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], Protocol::HttpsTls13);
+    }
+
+    #[test]
+    fn test_parse_protocols_with_spaces() {
+        let result = parse_protocols("http, tls12").unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], Protocol::Http);
+        assert_eq!(result[1], Protocol::HttpsTls12);
+    }
+
+    #[test]
+    fn test_parse_protocols_unknown() {
+        let result = parse_protocols("http,quic");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("quic"));
+    }
+
+    #[test]
+    fn test_protocol_all() {
+        let all = Protocol::all();
+        assert_eq!(all.len(), 3);
+    }
 }

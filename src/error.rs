@@ -19,6 +19,12 @@ pub enum BlockcheckError {
 
     #[error("process timed out after {timeout_ms}ms")]
     ProcessTimeout { timeout_ms: u64 },
+
+    #[error("DNS resolve failed for {domain}: {reason}")]
+    DnsResolveFailed { domain: String, reason: String },
+
+    #[error("no IPv4 addresses found for {domain}")]
+    DnsNoAddresses { domain: String },
 }
 
 #[derive(Debug)]

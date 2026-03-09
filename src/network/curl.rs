@@ -3,7 +3,9 @@ use std::fmt;
 use crate::config::Protocol;
 use crate::system::process::{run_process, ProcessResult};
 
-const CURL_TIMEOUT_MS: u64 = 10_000;
+/// Extra time beyond curl's --max-time before we force-kill the process.
+/// Covers connect-timeout + TCP teardown overhead.
+const CURL_TIMEOUT_MARGIN_MS: u64 = 3_000;
 
 #[derive(Debug)]
 pub struct CurlResult {
@@ -54,6 +56,11 @@ fn to_curl_result(pr: ProcessResult) -> CurlResult {
     }
 }
 
+fn process_timeout_ms(max_time: &str) -> u64 {
+    let secs: f64 = max_time.parse().unwrap_or(1.0);
+    (secs * 1000.0) as u64 + CURL_TIMEOUT_MARGIN_MS
+}
+
 fn local_port_args(local_port: Option<&str>) -> Vec<String> {
     match local_port {
         Some(port) => vec!["--local-port".to_string(), port.to_string()],
@@ -78,7 +85,7 @@ pub async fn curl_test_http(
     args.extend_from_slice(&port_refs);
     args.push(&url);
 
-    match run_process(&args, CURL_TIMEOUT_MS).await {
+    match run_process(&args, process_timeout_ms(max_time)).await {
         Ok(pr) => to_curl_result(pr),
         Err(_) => CurlResult {
             exit_code: -1,
@@ -106,7 +113,7 @@ pub async fn curl_test_https_tls12(
     args.extend_from_slice(&port_refs);
     args.push(&url);
 
-    match run_process(&args, CURL_TIMEOUT_MS).await {
+    match run_process(&args, process_timeout_ms(max_time)).await {
         Ok(pr) => to_curl_result(pr),
         Err(_) => CurlResult {
             exit_code: -1,
@@ -134,7 +141,7 @@ pub async fn curl_test_https_tls13(
     args.extend_from_slice(&port_refs);
     args.push(&url);
 
-    match run_process(&args, CURL_TIMEOUT_MS).await {
+    match run_process(&args, process_timeout_ms(max_time)).await {
         Ok(pr) => to_curl_result(pr),
         Err(_) => CurlResult {
             exit_code: -1,
