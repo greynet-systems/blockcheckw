@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use console::style;
-use indicatif::MultiProgress;
 use tokio::signal;
 use tracing::info;
 
@@ -107,16 +106,18 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
         }
     });
 
+    let mut screen = ui::ScanScreen::new();
+
     // 1. DNS resolve
-    println!("{}", ui::section("DNS resolve"));
+    screen.println(&ui::section("DNS resolve"));
     let ips = match dns::resolve_ipv4(domain).await {
         Ok(ips) => {
-            println!(
+            screen.println(&format!(
                 "  {} {} {}",
                 domain,
                 ui::ARROW,
                 style(ips.join(", ")).bold()
-            );
+            ));
             ips
         }
         Err(e) => {
@@ -126,40 +127,46 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     };
 
     // 2. Baseline per protocol
-    println!("\n{}", ui::section("Baseline (without bypass)"));
+    screen.newline();
+    screen.println(&ui::section("Baseline (without bypass)"));
     let mut blocked_protocols = Vec::new();
 
     for &protocol in protocols {
         let result = baseline::test_baseline(domain, protocol, &config.curl_max_time).await;
-        println!("{}", baseline::format_baseline_verdict_styled(&result));
+        screen.println(&baseline::format_baseline_verdict_styled(&result));
         if result.is_blocked() {
             blocked_protocols.push(protocol);
         }
     }
 
     if blocked_protocols.is_empty() {
-        println!(
-            "\n{}",
+        screen.newline();
+        screen.println(&format!(
+            "{}",
             style("All protocols are available without bypass. Nothing to scan.").green()
-        );
+        ));
         return;
     }
 
     let blocked_names: Vec<String> = blocked_protocols.iter().map(|p| p.to_string()).collect();
-    println!("\n{}", ui::blocked_list(&blocked_names.join(", ")));
+    screen.newline();
+    screen.println(&ui::blocked_list(&blocked_names.join(", ")));
 
     // 3. Scan each blocked protocol
-    let multi = MultiProgress::new();
     let mut summary: Vec<(Protocol, Vec<Vec<String>>, usize, usize, usize, f64)> = Vec::new();
 
     for &protocol in &blocked_protocols {
-        println!("\n{}", ui::section(&format!("Scanning {protocol}")));
+        screen.newline();
+        screen.println(&ui::section(&format!("Scanning {protocol}")));
         let strategies = generator::generate_strategies(protocol);
-        println!(
+        screen.println(&format!(
             "  generated {} strategies, workers={}",
             style(strategies.len()).bold(),
             style(config.worker_count).bold()
-        );
+        ));
+
+        screen.divider();
+        screen.begin_progress(strategies.len() as u64);
 
         let (results, stats) = run_parallel(
             &config,
@@ -167,10 +174,13 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
             protocol,
             &strategies,
             &ips,
-            Some(&multi),
-            None,
+            Some(screen.multi()),
+            Some(screen.pb()),
         )
         .await;
+
+        screen.finish_progress();
+        screen.divider();
 
         let working: Vec<Vec<String>> = results
             .iter()
@@ -178,17 +188,14 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
             .map(|r| r.strategy_args.clone())
             .collect();
 
-        println!(
-            "{}",
-            ui::stats_line(
-                stats.completed,
-                stats.successes,
-                stats.failures,
-                stats.errors,
-                stats.elapsed.as_secs_f64(),
-                stats.throughput(),
-            )
-        );
+        screen.println(&ui::stats_line(
+            stats.completed,
+            stats.successes,
+            stats.failures,
+            stats.errors,
+            stats.elapsed.as_secs_f64(),
+            stats.throughput(),
+        ));
 
         summary.push((
             protocol,
@@ -201,12 +208,13 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     }
 
     // 4. Summary
-    println!("\n{}", ui::section(&format!("Summary for {domain}")));
+    screen.newline();
+    screen.println(&ui::section(&format!("Summary for {domain}")));
 
     // Available protocols (not blocked)
     for &protocol in protocols {
         if !blocked_protocols.contains(&protocol) {
-            println!("{}", ui::summary_available(&protocol.to_string()));
+            screen.println(&ui::summary_available(&protocol.to_string()));
         }
     }
 
@@ -214,11 +222,11 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     for (protocol, working, _successes, _failures, _errors, _elapsed) in &summary {
         let proto = protocol.to_string();
         if working.is_empty() {
-            println!("{}", ui::summary_no_strategies(&proto));
+            screen.println(&ui::summary_no_strategies(&proto));
         } else {
-            println!("{}", ui::summary_found(&proto, working.len()));
+            screen.println(&ui::summary_found(&proto, working.len()));
             for args in working {
-                println!("{}", ui::strategy_line(&args.join(" ")));
+                screen.println(&ui::strategy_line(&args.join(" ")));
             }
         }
     }
