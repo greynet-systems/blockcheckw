@@ -49,7 +49,7 @@ cargo build --release
 
 Кросс-компиляция для роутера (aarch64 + OpenWrt/musl):
 ```shell
-cargo build --release --target aarch64-unknown-linux-musl
+cargo build --release --target aarch64-unknown-linux-musl &&
 scp target/aarch64-unknown-linux-musl/release/blockcheckw root@router:/tmp/
 ```
 
@@ -59,14 +59,32 @@ scp target/aarch64-unknown-linux-musl/release/blockcheckw root@router:/tmp/
 ```shell
 cargo test --lib
 ```
-### Нагрузочный тест масштабирования на роутере
+### Бенчмарк: автоопределение оптимального числа воркеров
 ```shell
-ssh root@router "/tmp/blockcheckw --benchmark"
+blockcheckw benchmark
 ```
-#### Определение оптимального количества workers(FIXME)
-```shell
-blockcheckw -w 32 benchmark -s 64 --scaling
+
+Бенчмарк автоматически тестирует степени двойки (1, 2, 4, ...) до `CPU * 16` и выдаёт рекомендацию:
+
 ```
+=== blockcheckw benchmark ===
+domain=rutracker.org  protocol=HTTP  strategies=64  max_workers=64
+
+ Workers  Elapsed(s)  Throughput  Speedup  Errors
+ -------  ----------  ----------  -------  ------
+       1       72.10       0.9/s     1.0x       0
+       4       19.50       3.3/s     3.7x       0
+      64        2.40      27.1/s    30.1x       0
+
+Recommended: blockcheckw -w 64
+```
+
+Алгоритм: выбирает минимальное число воркеров, достигающее 90% от максимального throughput.
+
+Опции:
+- `-s N` / `--strategies N` — количество стратегий (default: 64)
+- `-M N` / `--max-workers N` — верхняя граница поиска (default: CPU * 16)
+- `--raw` — только таблица, без рекомендации (для скриптов)
 
 ## Зависимости
 
