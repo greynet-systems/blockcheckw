@@ -3,5 +3,6 @@ pub mod error;
 pub mod firewall;
 pub mod network;
 pub mod pipeline;
+pub mod strategy;
 pub mod system;
 pub mod worker;
