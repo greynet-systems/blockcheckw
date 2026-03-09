@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use tokio::task::JoinSet;
 use tracing::info;
 
@@ -48,7 +49,6 @@ pub async fn run_parallel(
 
     // Prepare nftables table once
     if let Err(e) = nftables::prepare_table(&config.nft_table).await {
-        // If table creation fails, return all as errors
         let results: Vec<StrategyResult> = strategies
             .iter()
             .map(|args| StrategyResult {
@@ -67,12 +67,20 @@ pub async fn run_parallel(
         return (results, stats);
     }
 
+    let pb = ProgressBar::new(strategies.len() as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, ETA {eta})"
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+
     let mut all_results: Vec<StrategyResult> = Vec::with_capacity(strategies.len());
     let mut successes = 0usize;
     let mut failures = 0usize;
     let mut errors = 0usize;
 
-    // Batch strategies by worker_count
     let batches: Vec<&[Vec<String>]> = strategies.chunks(config.worker_count).collect();
 
     for batch in batches {
@@ -95,7 +103,6 @@ pub async fn run_parallel(
             });
         }
 
-        // Collect batch results
         while let Some(join_result) = join_set.join_next().await {
             match join_result {
                 Ok((strategy_args, task_result)) => {
@@ -106,11 +113,14 @@ pub async fn run_parallel(
                     }
 
                     let test_func = protocol.test_func_name();
-                    info!(
-                        "- {test_func} ipv4 {domain} : nfqws2 {}",
-                        strategy_args.join(" ")
-                    );
-                    info!("{task_result}");
+                    pb.suspend(|| {
+                        println!(
+                            "- {test_func} ipv4 {domain} : nfqws2 {}",
+                            strategy_args.join(" ")
+                        );
+                        println!("{task_result}");
+                    });
+                    pb.inc(1);
 
                     all_results.push(StrategyResult {
                         strategy_args,
@@ -119,11 +129,16 @@ pub async fn run_parallel(
                 }
                 Err(join_err) => {
                     errors += 1;
-                    tracing::error!("task join error: {join_err}");
+                    pb.suspend(|| {
+                        eprintln!("task join error: {join_err}");
+                    });
+                    pb.inc(1);
                 }
             }
         }
     }
+
+    pb.finish_and_clear();
 
     // Cleanup nftables table
     nftables::drop_table(&config.nft_table).await;
