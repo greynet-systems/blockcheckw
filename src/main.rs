@@ -8,7 +8,7 @@ use tracing::info;
 use blockcheckw::config::{CoreConfig, Protocol};
 use blockcheckw::error::TaskResult;
 use blockcheckw::firewall::nftables;
-use blockcheckw::network::dns;
+use blockcheckw::network::{dns, isp};
 use blockcheckw::pipeline::baseline;
 use blockcheckw::pipeline::benchmark;
 use blockcheckw::pipeline::runner::run_parallel;
@@ -107,6 +107,11 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     });
 
     let mut screen = ui::ScanScreen::new();
+
+    // 0. ISP info
+    if let Some(info) = isp::detect_ip_info().await {
+        screen.set_info(&format!("  ISP: {info}"));
+    }
 
     // 1. DNS resolve
     screen.println(&ui::section("DNS resolve"));
@@ -228,6 +233,8 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
             }
         }
     }
+
+    screen.finish_info();
 }
 
 async fn run_default(workers: usize) {

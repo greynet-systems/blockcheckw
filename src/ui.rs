@@ -115,6 +115,7 @@ pub struct ScanScreen {
     multi: MultiProgress,
     divider_bar: Option<ProgressBar>,
     pb: Option<ProgressBar>,
+    info_bar: Option<ProgressBar>,
 }
 
 impl ScanScreen {
@@ -123,6 +124,7 @@ impl ScanScreen {
             multi: MultiProgress::new(),
             divider_bar: None,
             pb: None,
+            info_bar: None,
         }
     }
 
@@ -136,15 +138,44 @@ impl ScanScreen {
         let _ = self.multi.println("");
     }
 
+    /// Set a fixed info line (e.g. ISP info) that stays below the progress bar.
+    pub fn set_info(&mut self, msg: &str) {
+        let bar = self.multi.add(ProgressBar::new(0));
+        bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+        bar.set_message(format!("{}", style(msg).dim()));
+        bar.tick();
+        self.info_bar = Some(bar);
+    }
+
+    /// Clear and remove the info bar.
+    pub fn finish_info(&mut self) {
+        if let Some(bar) = self.info_bar.take() {
+            bar.finish_and_clear();
+        }
+    }
+
     /// Create divider + progress bar and add both to `MultiProgress`.
-    /// The divider is a fixed `─────` line that stays above the progress bar.
+    /// If an info_bar exists, inserts divider and pb before it so info stays at the bottom.
     pub fn begin_progress(&mut self, total: u64) {
         let width = Term::stdout().size().1 as usize;
-        let divider = self.multi.add(ProgressBar::new(0));
+
+        let divider = ProgressBar::new(0);
+        let pb = ProgressBar::new(total);
+
+        // Add to MultiProgress first, then configure — indicatif needs the draw
+        // target set up before set_message/enable_steady_tick take effect.
+        let (divider, pb) = if let Some(ref info) = self.info_bar {
+            (
+                self.multi.insert_before(info, divider),
+                self.multi.insert_before(info, pb),
+            )
+        } else {
+            (self.multi.add(divider), self.multi.add(pb))
+        };
+
         divider.set_style(ProgressStyle::with_template("{msg}").unwrap());
         divider.set_message(format!("{}", style("─".repeat(width)).dim()));
 
-        let pb = ProgressBar::new(total);
         pb.set_style(
             ProgressStyle::with_template(
                 "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, ETA {eta})"
@@ -153,13 +184,13 @@ impl ScanScreen {
             .progress_chars("=>-"),
         );
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        let pb = self.multi.add(pb);
 
         self.divider_bar = Some(divider);
         self.pb = Some(pb);
     }
 
     /// Finish and clear both the progress bar and the divider.
+    /// The info_bar remains visible.
     pub fn finish_progress(&mut self) {
         if let Some(pb) = self.pb.take() {
             pb.finish_and_clear();
