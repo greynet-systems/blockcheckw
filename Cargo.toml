@@ -1,0 +1,18 @@
+[package]
+name = "blockcheckw"
+version = "0.1.0"
+edition = "2021"
+description = "blockcheck.sh wrapper for better scanning speed"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "signal", "macros"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+libc = "0.2"
+
+[[test]]
+name = "parallel_bench"
+path = "tests/parallel_bench.rs"
