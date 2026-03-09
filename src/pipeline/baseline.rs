@@ -1,5 +1,6 @@
 use crate::config::Protocol;
 use crate::network::curl::{curl_test, interpret_curl_result, CurlVerdict};
+use crate::ui;
 
 pub struct BaselineResult {
     pub protocol: Protocol,
@@ -23,6 +24,24 @@ pub fn format_baseline_verdict(result: &BaselineResult) -> String {
         format!("{}: BLOCKED ({})", result.protocol, result.verdict)
     } else {
         format!("{}: available without bypass", result.protocol)
+    }
+}
+
+pub fn format_baseline_verdict_styled(result: &BaselineResult) -> String {
+    let proto = result.protocol.to_string();
+    match &result.verdict {
+        CurlVerdict::Available => {
+            ui::verdict_available(&proto, "available without bypass")
+        }
+        CurlVerdict::SuspiciousRedirect { code, location } => {
+            ui::verdict_warning(&proto, &format!("suspicious redirect {code} to {location}"))
+        }
+        CurlVerdict::ServerReceivesFakes => {
+            ui::verdict_warning(&proto, "server receives fakes (HTTP 400)")
+        }
+        CurlVerdict::Unavailable { curl_exit_code } => {
+            ui::verdict_blocked(&proto, &format!("UNAVAILABLE code={curl_exit_code}"))
+        }
     }
 }
 

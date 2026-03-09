@@ -1,3 +1,5 @@
+use console::style;
+
 use crate::config::{CoreConfig, Protocol};
 use crate::pipeline::runner::run_parallel;
 
@@ -118,6 +120,62 @@ fn build_table_text(
     lines.join("\n")
 }
 
+fn build_table_styled(
+    header: &str,
+    points: &[BenchmarkPoint],
+    base_throughput: f64,
+    probe_note: Option<usize>,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("{}", style(header).bold().cyan()));
+    lines.push(format!(
+        "{:>8}  {:>10}  {:>10}  {:>7}  {:>6}",
+        style("Workers").bold(),
+        style("Elapsed(s)").bold(),
+        style("Throughput").bold(),
+        style("Speedup").bold(),
+        style("Errors").bold(),
+    ));
+    lines.push(format!(
+        "{:>8}  {:>10}  {:>10}  {:>7}  {:>6}",
+        "-------", "----------", "----------", "-------", "------"
+    ));
+    for (i, p) in points.iter().enumerate() {
+        let speedup = if base_throughput > 0.0 {
+            p.throughput / base_throughput
+        } else {
+            0.0
+        };
+        let label = if i == 0 && probe_note.is_some() {
+            format!("{:>5}*", p.workers)
+        } else {
+            format!("{:>5}", p.workers)
+        };
+        // Pad data before styling
+        let elapsed_str = format!("{:>10.2}", p.elapsed_secs);
+        let throughput_str = format!("{:>8.1}/s", p.throughput);
+        let speedup_str = format!("{:>6.1}x", speedup);
+        let errors_str = format!("{:>6}", p.errors);
+
+        let errors_styled = if p.errors > 0 {
+            style(errors_str).red().to_string()
+        } else {
+            errors_str
+        };
+
+        lines.push(format!(
+            "{label:>8}  {elapsed_str}  {throughput_str}  {speedup_str}  {errors_styled}",
+        ));
+    }
+    if let Some(probe_count) = probe_note {
+        lines.push(format!(
+            "  {} baseline probe: {probe_count} strategies (I/O-bound, throughput stable)",
+            style("*").dim(),
+        ));
+    }
+    lines.join("\n")
+}
+
 pub async fn run_benchmark(
     strategy_count: usize,
     max_workers: usize,
@@ -149,7 +207,11 @@ pub async fn run_benchmark(
     // Table bar: static text, redrawn as rows are added
     let table_bar = multi.add(ProgressBar::new_spinner());
     table_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-    let initial_table = build_table_text(&header, &[], 0.0, None);
+    let initial_table = if raw {
+        build_table_text(&header, &[], 0.0, None)
+    } else {
+        build_table_styled(&header, &[], 0.0, None)
+    };
     table_bar.set_message(initial_table);
 
     // Progress bar below the table
@@ -215,12 +277,11 @@ pub async fn run_benchmark(
 
         // Redraw table with new row
         let probe_note = if has_probe { Some(probe_count) } else { None };
-        let table = build_table_text(
-            &header,
-            &points,
-            base_throughput.unwrap_or(1.0),
-            probe_note,
-        );
+        let table = if raw {
+            build_table_text(&header, &points, base_throughput.unwrap_or(1.0), probe_note)
+        } else {
+            build_table_styled(&header, &points, base_throughput.unwrap_or(1.0), probe_note)
+        };
         table_bar.set_message(table);
 
         // Small delay between runs for cleanup
@@ -233,14 +294,16 @@ pub async fn run_benchmark(
 
     // Final table with recommendation
     let probe_note = if has_probe { Some(probe_count) } else { None };
-    let mut final_table = build_table_text(
-        &header,
-        &points,
-        base_throughput.unwrap_or(1.0),
-        probe_note,
-    );
+    let mut final_table = if raw {
+        build_table_text(&header, &points, base_throughput.unwrap_or(1.0), probe_note)
+    } else {
+        build_table_styled(&header, &points, base_throughput.unwrap_or(1.0), probe_note)
+    };
     if !raw {
-        final_table.push_str(&format!("\nRecommended: blockcheckw -w {recommended_workers}"));
+        final_table.push_str(&format!(
+            "\n{}",
+            style(format!("Recommended: blockcheckw -w {recommended_workers}")).green().bold()
+        ));
     }
     table_bar.finish_with_message(final_table);
 

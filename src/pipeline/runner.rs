@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::task::JoinSet;
 use tracing::info;
@@ -126,10 +127,25 @@ pub async fn run_parallel(
                     }
 
                     let test_func = protocol.test_func_name();
-                    let line = format!(
-                        "- {test_func} ipv4 {domain} : nfqws2 {}\n{task_result}",
+                    let header = format!(
+                        "- {test_func} ipv4 {domain} : nfqws2 {}",
                         strategy_args.join(" ")
                     );
+                    let line = match &task_result {
+                        TaskResult::Success { .. } => {
+                            format!(
+                                "{}\n{}",
+                                style(&header).green().bold(),
+                                style(&task_result).green().bold()
+                            )
+                        }
+                        TaskResult::Failed { .. } => {
+                            format!("{}\n{}", style(&header).dim(), style(&task_result).dim())
+                        }
+                        TaskResult::Error { .. } => {
+                            format!("{}\n{}", style(&header).red(), style(&task_result).red())
+                        }
+                    };
                     if let Some(m) = multi {
                         let _ = m.println(&line);
                     } else {

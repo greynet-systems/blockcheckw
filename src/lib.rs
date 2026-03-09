@@ -5,4 +5,5 @@ pub mod network;
 pub mod pipeline;
 pub mod strategy;
 pub mod system;
+pub mod ui;
 pub mod worker;
