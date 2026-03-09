@@ -16,14 +16,15 @@
 ### Pipeline команды scan
 
 ```
-DNS resolve → Baseline → Generate strategies → Run parallel → Summary
+ISP detect → DNS resolve → Baseline → Generate strategies → Run parallel → Summary
 ```
 
-1. **DNS resolve** — резолвит домен через `getent ahostsv4`, fallback на `nslookup`
-2. **Baseline** — проверяет каждый протокол без bypass (curl без `--local-port`), определяет заблокированные
-3. **Generate** — генерирует все стратегии для заблокированных протоколов (2449 HTTP / 9828 TLS1.3 / 19644 TLS1.2)
-4. **Run parallel** — прогоняет стратегии параллельно через worker pool
-5. **Summary** — выводит найденные рабочие стратегии
+1. **ISP detect** — определяет провайдера через `curl ipinfo.io` (IP, ASN, город). Отображается как фиксированная строка под progress bar на протяжении всего сканирования
+2. **DNS resolve** — резолвит домен через `getent ahostsv4`, fallback на `nslookup`
+3. **Baseline** — проверяет каждый протокол без bypass (curl без `--local-port`), определяет заблокированные
+4. **Generate** — генерирует все стратегии для заблокированных протоколов (2449 HTTP / 9828 TLS1.3 / 19644 TLS1.2)
+5. **Run parallel** — прогоняет стратегии параллельно через worker pool
+6. **Summary** — выводит найденные рабочие стратегии
 
 ## Сборка
 
@@ -122,26 +123,28 @@ blockcheckw scan
 
 ```
 === DNS resolve ===
-resolved rutracker.org -> 172.67.182.217
+  rutracker.org → 172.67.182.217
 
 === Baseline (without bypass) ===
-  HTTP: BLOCKED (UNAVAILABLE code=28)
-  HTTPS/TLS1.2: BLOCKED (UNAVAILABLE code=28)
-  HTTPS/TLS1.3: available without bypass
+  ✓ HTTP: BLOCKED (UNAVAILABLE code=28)
+  ✓ HTTPS/TLS1.2: BLOCKED (UNAVAILABLE code=28)
+  ✓ HTTPS/TLS1.3: available without bypass
 
 Blocked protocols: HTTP, HTTPS/TLS1.2
 
 === Scanning HTTP ===
   generated 2449 strategies, workers=64
-  ...
+────────────────────────────────────────────────────
+⠋ [00:01:52] [===============>        ] 2400/2449 (21.4/s, ETA 0s)
+  ISP: AS1234 Rostelecom | 1.2.3.4 | Moscow, Moscow, RU
   completed: 2449 | success: 12 | failed: 2437 | errors: 0 | 114.3s (21.4 strat/sec)
 
 === Summary for rutracker.org ===
-  HTTPS/TLS1.3: working without bypass
-  HTTP: 12 working strategies found
-    nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:ip_ttl=4:repeats=1
+  ✓ HTTPS/TLS1.3: working without bypass
+  ✓ HTTP: 12 working strategies found
+    → nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:ip_ttl=4:repeats=1
     ...
-  HTTPS/TLS1.2: no working strategies found
+  ✗ HTTPS/TLS1.2: no working strategies found
 ```
 
 **Флаги:**
@@ -181,12 +184,13 @@ blockcheckw -w 64 scan
 - **CPU**: 4x ARM Cortex-A53
 - **RAM**: 2 GB
 - **OS**: OpenWrt 25.12, kernel 6.12
-- **Бинарник**: статически слинкованный `aarch64-unknown-linux-musl`, 2.6 MB
+- **Бинарник**: статически слинкованный `aarch64-unknown-linux-musl`, ~4.9 MB
 
 ## Зависимости
 
 - Rust (edition 2021)
 - tokio (async runtime)
+- regex (парсинг ISP info)
 - nfqws2 в `/opt/zapret2/`
 - nftables
 - curl
