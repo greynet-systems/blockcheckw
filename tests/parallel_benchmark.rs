@@ -97,7 +97,7 @@ async fn parallel_scaling_bench() {
         eprintln!("\n--- Running with worker_count={wc}, strategies={strategy_count} ---");
         let start = Instant::now();
 
-        let (results, stats) = run_parallel(&config, domain, protocol, &strategies, &ips).await;
+        let (results, stats) = run_parallel(&config, domain, protocol, &strategies, &ips, None, None).await;
 
         let elapsed_ms = start.elapsed().as_millis();
 

@@ -95,7 +95,7 @@ async fn run_default(workers: usize) {
     info!("blockcheckw starting: {protocol} {domain}");
     info!("workers={}, strategies={}", config.worker_count, strategies.len());
 
-    let (results, stats) = run_parallel(&config, domain, protocol, &strategies, &ips).await;
+    let (results, stats) = run_parallel(&config, domain, protocol, &strategies, &ips, None, None).await;
 
     info!("=== Results ===");
     for r in &results {

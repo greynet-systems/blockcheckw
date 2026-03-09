@@ -78,12 +78,52 @@ pub fn find_optimal(points: &[BenchmarkPoint]) -> usize {
         .unwrap_or_else(|| clean.last().unwrap().workers)
 }
 
+fn build_table_text(
+    header: &str,
+    points: &[BenchmarkPoint],
+    base_throughput: f64,
+    probe_note: Option<usize>,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(header.to_string());
+    lines.push(format!(
+        "{:>8}  {:>10}  {:>10}  {:>7}  {:>6}",
+        "Workers", "Elapsed(s)", "Throughput", "Speedup", "Errors"
+    ));
+    lines.push(format!(
+        "{:>8}  {:>10}  {:>10}  {:>7}  {:>6}",
+        "-------", "----------", "----------", "-------", "------"
+    ));
+    for (i, p) in points.iter().enumerate() {
+        let speedup = if base_throughput > 0.0 {
+            p.throughput / base_throughput
+        } else {
+            0.0
+        };
+        let label = if i == 0 && probe_note.is_some() {
+            format!("{:>5}*", p.workers)
+        } else {
+            format!("{:>5}", p.workers)
+        };
+        lines.push(format!(
+            "{label:>8}  {:>10.2}  {:>8.1}/s  {:>6.1}x  {:>6}",
+            p.elapsed_secs, p.throughput, speedup, p.errors
+        ));
+    }
+    if let Some(probe_count) = probe_note {
+        lines.push(format!(
+            "  * baseline probe: {probe_count} strategies (I/O-bound, throughput stable)"
+        ));
+    }
+    lines.join("\n")
+}
+
 pub async fn run_benchmark(
     strategy_count: usize,
     max_workers: usize,
     raw: bool,
 ) -> BenchmarkResult {
-    use indicatif::{ProgressBar, ProgressStyle};
+    use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
     let domain = "rutracker.org";
     let protocol = Protocol::Http;
@@ -91,29 +131,33 @@ pub async fn run_benchmark(
     let strategies = generate_strategies(strategy_count);
     let worker_counts = worker_counts_to_test(max_workers);
 
-    if !raw {
-        println!("=== blockcheckw benchmark ===");
-        println!(
-            "domain={domain}  protocol={protocol}  strategies={strategy_count}  max_workers={max_workers}"
-        );
-        println!();
-    }
+    let probe_count = 8.min(strategy_count);
+    let probe_strategies = generate_strategies(probe_count);
+    let has_probe = worker_counts.first() == Some(&1) && strategy_count > probe_count;
 
-    // Print table header before creating progress bar
-    println!(
-        "{:>8}  {:>10}  {:>10}  {:>7}  {:>6}",
-        "Workers", "Elapsed(s)", "Throughput", "Speedup", "Errors"
-    );
-    println!(
-        "{:>8}  {:>10}  {:>10}  {:>7}  {:>6}",
-        "-------", "----------", "----------", "-------", "------"
-    );
-
-    let total_steps = worker_counts.len() * strategy_count;
-    let pb = if raw {
-        ProgressBar::hidden()
+    let header = if raw {
+        String::new()
     } else {
-        let pb = ProgressBar::new(total_steps as u64);
+        format!(
+            "=== blockcheckw benchmark ===\ndomain={domain}  protocol={protocol}  strategies={strategy_count}  max_workers={max_workers}\n"
+        )
+    };
+
+    // MultiProgress: vanilla output scrolls above, table + progress bar stay at bottom
+    let multi = MultiProgress::new();
+
+    // Table bar: static text, redrawn as rows are added
+    let table_bar = multi.add(ProgressBar::new_spinner());
+    table_bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+    let initial_table = build_table_text(&header, &[], 0.0, None);
+    table_bar.set_message(initial_table);
+
+    // Progress bar below the table
+    let total_steps = probe_count + (worker_counts.len() - 1) * strategy_count;
+    let pb = if raw {
+        multi.add(ProgressBar::hidden())
+    } else {
+        let pb = multi.add(ProgressBar::new(total_steps as u64));
         pb.set_style(
             ProgressStyle::with_template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:20.cyan/blue}] {pos}/{len} ({msg}, ETA {eta})"
@@ -132,14 +176,25 @@ pub async fn run_benchmark(
     let bench_start = std::time::Instant::now();
 
     for &wc in &worker_counts {
+        let is_probe = wc == 1 && has_probe;
+        let run_strategies = if is_probe { &probe_strategies } else { &strategies };
+        let run_count = run_strategies.len();
+
         let config = CoreConfig {
             worker_count: wc,
             ..CoreConfig::default()
         };
 
-        pb.set_message(format!("w={wc} ..."));
+        if is_probe {
+            pb.set_message(format!("w={wc} probe({probe_count}) ..."));
+        } else {
+            pb.set_message(format!("w={wc} ..."));
+        }
 
-        let (_, stats) = run_parallel(&config, domain, protocol, &strategies, &ips).await;
+        let (_, stats) = run_parallel(
+            &config, domain, protocol, run_strategies, &ips,
+            Some(&multi), Some(&pb),
+        ).await;
 
         let point = BenchmarkPoint {
             workers: wc,
@@ -151,22 +206,22 @@ pub async fn run_benchmark(
         if base_throughput.is_none() {
             base_throughput = Some(point.throughput);
         }
-        let base = base_throughput.unwrap_or(1.0);
-        let speedup = if base > 0.0 { point.throughput / base } else { 0.0 };
-
-        total_strategies_done += strategy_count;
-        let overall_rate = total_strategies_done as f64 / bench_start.elapsed().as_secs_f64();
-
-        pb.suspend(|| {
-            println!(
-                "{:>8}  {:>10.2}  {:>8.1}/s  {:>6.1}x  {:>6}",
-                point.workers, point.elapsed_secs, point.throughput, speedup, point.errors
-            );
-        });
-        pb.inc(strategy_count as u64);
-        pb.set_message(format!("{overall_rate:.1} strat/s"));
 
         points.push(point);
+
+        total_strategies_done += run_count;
+        let overall_rate = total_strategies_done as f64 / bench_start.elapsed().as_secs_f64();
+        pb.set_message(format!("{overall_rate:.1} strat/s"));
+
+        // Redraw table with new row
+        let probe_note = if has_probe { Some(probe_count) } else { None };
+        let table = build_table_text(
+            &header,
+            &points,
+            base_throughput.unwrap_or(1.0),
+            probe_note,
+        );
+        table_bar.set_message(table);
 
         // Small delay between runs for cleanup
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -176,10 +231,18 @@ pub async fn run_benchmark(
 
     let recommended_workers = find_optimal(&points);
 
+    // Final table with recommendation
+    let probe_note = if has_probe { Some(probe_count) } else { None };
+    let mut final_table = build_table_text(
+        &header,
+        &points,
+        base_throughput.unwrap_or(1.0),
+        probe_note,
+    );
     if !raw {
-        println!();
-        println!("Recommended: blockcheckw -w {recommended_workers}");
+        final_table.push_str(&format!("\nRecommended: blockcheckw -w {recommended_workers}"));
     }
+    table_bar.finish_with_message(final_table);
 
     BenchmarkResult {
         points,
@@ -206,7 +269,6 @@ mod tests {
             BenchmarkPoint { workers: 64, elapsed_secs: 2.4, throughput: 27.1, errors: 0 },
             BenchmarkPoint { workers: 128, elapsed_secs: 2.8, throughput: 22.7, errors: 0 },
         ];
-        // 90% of 27.1 = 24.39 → only 64 (27.1) passes
         assert_eq!(find_optimal(&points), 64);
     }
 
@@ -217,7 +279,6 @@ mod tests {
             BenchmarkPoint { workers: 4, elapsed_secs: 3.0, throughput: 3.5, errors: 0 },
             BenchmarkPoint { workers: 8, elapsed_secs: 1.5, throughput: 7.0, errors: 5 },
         ];
-        // worker=8 has errors → excluded; max clean throughput = 3.5; 90% = 3.15 → 4 passes
         assert_eq!(find_optimal(&points), 4);
     }
 
@@ -227,7 +288,6 @@ mod tests {
             BenchmarkPoint { workers: 4, elapsed_secs: 5.0, throughput: 2.0, errors: 1 },
             BenchmarkPoint { workers: 8, elapsed_secs: 3.0, throughput: 3.0, errors: 2 },
         ];
-        // All have errors → fallback to first point's workers
         assert_eq!(find_optimal(&points), 4);
     }
 

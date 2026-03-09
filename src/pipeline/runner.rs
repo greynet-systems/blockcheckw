@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tokio::task::JoinSet;
 use tracing::info;
 
@@ -37,12 +37,17 @@ impl RunStats {
 }
 
 /// Run strategies in parallel batches using worker slots.
+///
+/// If `multi` is provided, vanilla output goes above all bars via `multi.println()`.
+/// If `external_pb` is provided, progress ticks on it. Otherwise a new bar is created.
 pub async fn run_parallel(
     config: &CoreConfig,
     domain: &str,
     protocol: Protocol,
     strategies: &[Vec<String>],
     ips: &[String],
+    multi: Option<&MultiProgress>,
+    external_pb: Option<&ProgressBar>,
 ) -> (Vec<StrategyResult>, RunStats) {
     let start = Instant::now();
     let slots = WorkerSlot::create_slots(config.worker_count, config.base_qnum, config.base_local_port);
@@ -67,14 +72,22 @@ pub async fn run_parallel(
         return (results, stats);
     }
 
-    let pb = ProgressBar::new(strategies.len() as u64);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, ETA {eta})"
-        )
-        .unwrap()
-        .progress_chars("=>-"),
-    );
+    let owned_pb;
+    let pb: &ProgressBar = match external_pb {
+        Some(epb) => epb,
+        None => {
+            owned_pb = ProgressBar::new(strategies.len() as u64);
+            owned_pb.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, ETA {eta})"
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+            );
+            owned_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            &owned_pb
+        }
+    };
 
     let mut all_results: Vec<StrategyResult> = Vec::with_capacity(strategies.len());
     let mut successes = 0usize;
@@ -113,13 +126,15 @@ pub async fn run_parallel(
                     }
 
                     let test_func = protocol.test_func_name();
-                    pb.suspend(|| {
-                        println!(
-                            "- {test_func} ipv4 {domain} : nfqws2 {}",
-                            strategy_args.join(" ")
-                        );
-                        println!("{task_result}");
-                    });
+                    let line = format!(
+                        "- {test_func} ipv4 {domain} : nfqws2 {}\n{task_result}",
+                        strategy_args.join(" ")
+                    );
+                    if let Some(m) = multi {
+                        let _ = m.println(&line);
+                    } else {
+                        pb.suspend(|| println!("{line}"));
+                    }
                     pb.inc(1);
 
                     all_results.push(StrategyResult {
@@ -129,16 +144,21 @@ pub async fn run_parallel(
                 }
                 Err(join_err) => {
                     errors += 1;
-                    pb.suspend(|| {
-                        eprintln!("task join error: {join_err}");
-                    });
+                    let line = format!("task join error: {join_err}");
+                    if let Some(m) = multi {
+                        let _ = m.println(&line);
+                    } else {
+                        pb.suspend(|| eprintln!("{line}"));
+                    }
                     pb.inc(1);
                 }
             }
         }
     }
 
-    pb.finish_and_clear();
+    if external_pb.is_none() {
+        pb.finish_and_clear();
+    }
 
     // Cleanup nftables table
     nftables::drop_table(&config.nft_table).await;
