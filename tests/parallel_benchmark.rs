@@ -82,9 +82,9 @@ async fn parallel_scaling_bench() {
     let domain = "rutracker.org";
     let protocol = Protocol::Http;
     let ips = vec!["172.67.182.217".to_string()];
-    let strategy_count = 16;
+    let strategy_count = 128;
     let strategies = generate_strategies(strategy_count);
-    let worker_counts = [1, 2, 4, 8, 16];
+    let worker_counts = [8, 16, 64];
 
     let mut rows: Vec<BenchRow> = Vec::new();
 
