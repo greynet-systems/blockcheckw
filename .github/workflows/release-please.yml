@@ -58,7 +58,7 @@ jobs:
           path: target/${{ matrix.target }}/release/blockcheckw
           if-no-files-found: error
 
-  # Targets without pre-built std — cross + build-std, nightly toolchain
+  # Targets without pre-built std, but cross has Docker images
   build-nightly:
     if: needs.release-please.outputs.release_created == 'true'
     needs: [release-please]
@@ -70,8 +70,6 @@ jobs:
           - { arch: mips,   target: mips-unknown-linux-musl,        upx: true  }
           - { arch: mipsel, target: mipsel-unknown-linux-musl,      upx: true  }
           - { arch: mips64, target: mips64-unknown-linux-muslabi64,  upx: false }
-          - { arch: ppc,    target: powerpc-unknown-linux-musl,      upx: true  }
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl,   upx: true  }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -96,9 +94,58 @@ jobs:
           path: target/${{ matrix.target }}/release/blockcheckw
           if-no-files-found: error
 
+  # Targets where cross has no Docker image — cargo + musl-cross toolchain
+  build-musl-cross:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ppc
+            target: powerpc-unknown-linux-musl
+            upx: true
+            musl_arch: powerpc
+            linker_env: CARGO_TARGET_POWERPC_UNKNOWN_LINUX_MUSL_LINKER
+          - arch: riscv64
+            target: riscv64gc-unknown-linux-musl
+            upx: true
+            musl_arch: riscv64
+            linker_env: CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install musl-cross toolchain
+        run: |
+          curl -fsSL "https://musl.cc/${{ matrix.musl_arch }}-linux-musl-cross.tgz" | tar xz -C /opt
+          echo "/opt/${{ matrix.musl_arch }}-linux-musl-cross/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: cargo +nightly build --release --target ${{ matrix.target }} -Zbuild-std=std,panic_abort
+        env:
+          ${{ matrix.linker_env }}: ${{ matrix.musl_arch }}-linux-musl-gcc
+
+      - name: Compress with UPX
+        if: matrix.upx
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: target/${{ matrix.target }}/release/blockcheckw
+          args: --best --lzma
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blockcheckw-linux-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/blockcheckw
+          if-no-files-found: error
+
   upload-assets:
     if: needs.release-please.outputs.release_created == 'true'
-    needs: [release-please, build-stable, build-nightly]
+    needs: [release-please, build-stable, build-nightly, build-musl-cross]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
