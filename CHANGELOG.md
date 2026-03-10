@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/greynet-systems/blockcheckw/compare/v0.1.6...v0.1.7) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** вынос отдельного билда `build-musl-cross` для ppc, riscv64 платформ ([17f3d2f](https://github.com/greynet-systems/blockcheckw/commit/17f3d2f35cca59c0ae7621206448d2a608f3ea13))
+
 ## [0.1.6](https://github.com/greynet-systems/blockcheckw/compare/v0.1.5...v0.1.6) (2026-03-10)
 
 
