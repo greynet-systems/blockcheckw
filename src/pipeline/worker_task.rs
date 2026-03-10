@@ -15,15 +15,16 @@ pub struct WorkerTask {
 }
 
 /// Execute a full worker task cycle:
-/// 1. Add nftables rule
+/// 1a. Add outgoing nftables rule (postnat)
+/// 1b. Add incoming SYN,ACK nftables rule (prenat, for autottl)
 /// 2. Start nfqws2
 /// 3. Sleep for init delay
 /// 4. Run curl test
 /// 5. Interpret result
-/// 6. Cleanup: kill nfqws2 + remove rule
+/// 6. Cleanup: kill nfqws2 + remove both rules
 pub async fn execute_worker_task(config: &CoreConfig, task: &WorkerTask) -> TaskResult {
-    // Step 1: Add nftables rule
-    let handle = match nftables::add_worker_rule(
+    // Step 1a: Add outgoing nftables rule (postnat)
+    let postnat_handle = match nftables::add_worker_rule(
         &config.nft_table,
         &task.slot.sport_range(),
         task.protocol.port(),
@@ -38,12 +39,31 @@ pub async fn execute_worker_task(config: &CoreConfig, task: &WorkerTask) -> Task
         }
     };
 
+    // Step 1b: Add incoming SYN,ACK rule (prenat, for autottl)
+    let prenat_handle = match nftables::add_incoming_rule(
+        &config.nft_table,
+        &task.slot.sport_range(),
+        task.protocol.port(),
+        task.slot.qnum,
+        &task.ips,
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            // Cleanup postnat rule on prenat rule failure
+            let _ = nftables::remove_rule(&config.nft_table, postnat_handle).await;
+            return TaskResult::Error { error: e };
+        }
+    };
+
     // Step 2: Start nfqws2
     let mut nfqws2_process = match start_nfqws2(config, task.slot.qnum, &task.strategy_args) {
         Ok(p) => p,
         Err(e) => {
-            // Cleanup rule on nfqws2 start failure
-            let _ = nftables::remove_rule(&config.nft_table, handle).await;
+            // Cleanup both rules on nfqws2 start failure
+            let _ = nftables::remove_rule(&config.nft_table, postnat_handle).await;
+            let _ = nftables::remove_prenat_rule(&config.nft_table, prenat_handle).await;
             return TaskResult::Error { error: e };
         }
     };
@@ -78,9 +98,10 @@ pub async fn execute_worker_task(config: &CoreConfig, task: &WorkerTask) -> Task
     }
     .await;
 
-    // Step 6: Cleanup — always kill nfqws2 and remove rule
+    // Step 6: Cleanup — always kill nfqws2 and remove both rules
     nfqws2_process.kill().await;
-    let _ = nftables::remove_rule(&config.nft_table, handle).await;
+    let _ = nftables::remove_rule(&config.nft_table, postnat_handle).await;
+    let _ = nftables::remove_prenat_rule(&config.nft_table, prenat_handle).await;
 
     result
 }
