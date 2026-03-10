@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/greynet-systems/blockcheckw/compare/v0.1.5...v0.1.6) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** переход обратно к cross-билду, разделённому на две части ([48dca73](https://github.com/greynet-systems/blockcheckw/commit/48dca7303a359a2c6dc93da9a3bc9db456f8138e))
+
 ## [0.1.5](https://github.com/greynet-systems/blockcheckw/compare/v0.1.4...v0.1.5) (2026-03-10)
 
 
