@@ -121,7 +121,8 @@ jobs:
 
       - name: Install musl-cross toolchain
         run: |
-          curl -fsSL "https://musl.cc/${{ matrix.musl_arch }}-linux-musl-cross.tgz" | tar xz -C /opt
+          curl -fSL --retry 3 -o /tmp/toolchain.tgz "https://musl.cc/${{ matrix.musl_arch }}-linux-musl-cross.tgz"
+          tar xzf /tmp/toolchain.tgz -C /opt
           echo "/opt/${{ matrix.musl_arch }}-linux-musl-cross/bin" >> "$GITHUB_PATH"
 
       - name: Build
