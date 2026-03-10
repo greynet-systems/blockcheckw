@@ -53,6 +53,9 @@ pub async fn run_parallel(
     let start = Instant::now();
     let slots = WorkerSlot::create_slots(config.worker_count, config.base_qnum, config.base_local_port);
 
+    // Cleanup any leftover nftables table from a previous crashed run
+    nftables::drop_table(&config.nft_table).await;
+
     // Prepare nftables table once
     if let Err(e) = nftables::prepare_table(&config.nft_table).await {
         let results: Vec<StrategyResult> = strategies

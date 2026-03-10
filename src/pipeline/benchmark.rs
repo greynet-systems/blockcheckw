@@ -1,6 +1,7 @@
 use console::style;
 
 use crate::config::{CoreConfig, Protocol};
+use crate::network::dns;
 use crate::pipeline::runner::run_parallel;
 
 #[derive(Debug, Clone)]
@@ -180,12 +181,18 @@ pub async fn run_benchmark(
     strategy_count: usize,
     max_workers: usize,
     raw: bool,
-) -> BenchmarkResult {
+) -> Option<BenchmarkResult> {
     use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
     let domain = "rutracker.org";
     let protocol = Protocol::Http;
-    let ips = vec!["172.67.182.217".to_string()];
+    let ips = match dns::resolve_ipv4(domain).await {
+        Ok(ips) => ips,
+        Err(e) => {
+            eprintln!("DNS resolve failed for {domain}: {e}");
+            return None;
+        }
+    };
     let strategies = generate_strategies(strategy_count);
     let worker_counts = worker_counts_to_test(max_workers);
 
@@ -307,13 +314,13 @@ pub async fn run_benchmark(
     }
     table_bar.finish_with_message(final_table);
 
-    BenchmarkResult {
+    Some(BenchmarkResult {
         points,
         recommended_workers,
         strategy_count,
         domain: domain.to_string(),
         protocol,
-    }
+    })
 }
 
 #[cfg(test)]

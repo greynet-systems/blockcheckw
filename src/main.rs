@@ -74,11 +74,24 @@ enum Command {
         /// Show per-strategy verification tallies
         #[arg(long)]
         verbose: bool,
+
+        /// Overall scan timeout in seconds (0 = no limit)
+        #[arg(long, default_value_t = 0)]
+        timeout: u64,
     },
 }
 
 #[tokio::main]
 async fn main() {
+    // Panic hook: cleanup nftables table on panic (async runtime may be dead, use sync Command)
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = std::process::Command::new("nft")
+            .args(["delete", "table", "inet", "zapret"])
+            .output();
+        default_hook(info);
+    }));
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -102,6 +115,7 @@ async fn main() {
             verify_min,
             verify_timeout,
             verbose,
+            timeout,
         }) => {
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
@@ -126,13 +140,13 @@ async fn main() {
                 min_passes: verify_min.unwrap_or(verify_passes),
                 curl_max_time: verify_timeout,
             };
-            run_scan(cli.workers, &domain, &protocols, dns_mode, &verify_config, verbose).await;
+            run_scan(cli.workers, &domain, &protocols, dns_mode, &verify_config, verbose, timeout).await;
         }
         None => run_default(cli.workers).await,
     }
 }
 
-async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode: DnsMode, verify_config: &VerifyConfig, verbose: bool) {
+async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode: DnsMode, verify_config: &VerifyConfig, verbose: bool, timeout_secs: u64) {
     let config = Arc::new(CoreConfig {
         worker_count: workers,
         ..CoreConfig::default()
@@ -241,116 +255,143 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode
     // 3. Scan each blocked protocol
     //                       protocol, strategies,    success, fail,  err,   elapsed, unstable
     let mut summary: Vec<(Protocol, Vec<Vec<String>>, usize, usize, usize, f64, bool)> = Vec::new();
+    let mut timed_out = false;
 
-    for &protocol in &blocked_protocols {
-        screen.newline();
-        screen.println(&ui::section(&format!("Scanning {protocol}")));
-        let strategies = generator::generate_strategies(protocol);
-        screen.println(&format!(
-            "  generated {} strategies, workers={}",
-            style(strategies.len()).bold(),
-            style(config.worker_count).bold()
-        ));
-
-        screen.begin_progress(strategies.len() as u64);
-
-        let (results, stats) = run_parallel(
-            &config,
-            domain,
-            protocol,
-            &strategies,
-            &ips,
-            Some(screen.multi()),
-            Some(screen.pb()),
-        )
-        .await;
-
-        screen.finish_progress();
-
-        let working: Vec<Vec<String>> = results
-            .iter()
-            .filter(|r| matches!(r.result, TaskResult::Success { .. }))
-            .map(|r| r.strategy_args.clone())
-            .collect();
-
-        screen.println(&ui::stats_line(
-            stats.completed,
-            stats.successes,
-            stats.failures,
-            stats.errors,
-            stats.elapsed.as_secs_f64(),
-            stats.throughput(),
-        ));
-
-        // 3b. Verification
-        let (final_strategies, is_unstable) = if verify_config.passes > 0 && !working.is_empty() {
+    let scan_future = async {
+        for &protocol in &blocked_protocols {
             screen.newline();
-            screen.println(&ui::section(&format!("Verifying {protocol}")));
+            screen.println(&ui::section(&format!("Scanning {protocol}")));
+            let strategies = generator::generate_strategies(protocol);
             screen.println(&format!(
-                "  {} candidates, {} passes, timeout={}s",
-                style(working.len()).bold(),
-                style(verify_config.passes).bold(),
-                verify_config.curl_max_time,
+                "  generated {} strategies, workers={}",
+                style(strategies.len()).bold(),
+                style(config.worker_count).bold()
             ));
 
-            let summary_v = verify::run_verification(
+            screen.begin_progress(strategies.len() as u64);
+
+            let (results, stats) = run_parallel(
                 &config,
                 domain,
                 protocol,
-                &working,
+                &strategies,
                 &ips,
-                verify_config,
-                &mut screen,
+                Some(screen.multi()),
+                Some(screen.pb()),
             )
             .await;
 
-            screen.println(&ui::verify_summary_line(
-                summary_v.verified_count,
-                summary_v.total_candidates,
-                summary_v.required_passes,
-                summary_v.total_passes,
+            screen.finish_progress();
+
+            let working: Vec<Vec<String>> = results
+                .iter()
+                .filter(|r| matches!(r.result, TaskResult::Success { .. }))
+                .map(|r| r.strategy_args.clone())
+                .collect();
+
+            screen.println(&ui::stats_line(
+                stats.completed,
+                stats.successes,
+                stats.failures,
+                stats.errors,
+                stats.elapsed.as_secs_f64(),
+                stats.throughput(),
             ));
 
-            if verbose {
-                for tally in &summary_v.tallies {
-                    screen.println(&ui::verify_tally_line(tally, summary_v.required_passes));
-                }
-            }
+            // 3b. Verification
+            let (final_strategies, is_unstable) = if verify_config.passes > 0 && !working.is_empty() {
+                screen.newline();
+                screen.println(&ui::section(&format!("Verifying {protocol}")));
+                screen.println(&format!(
+                    "  {} candidates, {} passes, timeout={}s",
+                    style(working.len()).bold(),
+                    style(verify_config.passes).bold(),
+                    verify_config.curl_max_time,
+                ));
 
-            if !summary_v.verified.is_empty() {
-                (summary_v.verified, false)
-            } else if let Some(relaxed) = &summary_v.relaxed {
-                screen.println(&ui::verify_relaxed_header(
+                let summary_v = verify::run_verification(
+                    &config,
+                    domain,
+                    protocol,
+                    &working,
+                    &ips,
+                    verify_config,
+                    &mut screen,
+                )
+                .await;
+
+                screen.println(&ui::verify_summary_line(
+                    summary_v.verified_count,
+                    summary_v.total_candidates,
                     summary_v.required_passes,
                     summary_v.total_passes,
-                    relaxed.actual_min,
-                    relaxed.strategies.len(),
                 ));
-                for tally in summary_v.tallies.iter().filter(|t| t.pass_count >= relaxed.actual_min) {
-                    screen.println(&ui::verify_tally_line(tally, relaxed.actual_min));
-                }
-                (relaxed.strategies.clone(), true)
-            } else {
-                (vec![], false)
-            }
-        } else {
-            (working, false)
-        };
 
-        summary.push((
-            protocol,
-            final_strategies,
-            stats.successes,
-            stats.failures,
-            stats.errors,
-            stats.elapsed.as_secs_f64(),
-            is_unstable,
-        ));
+                if verbose {
+                    for tally in &summary_v.tallies {
+                        screen.println(&ui::verify_tally_line(tally, summary_v.required_passes));
+                    }
+                }
+
+                if !summary_v.verified.is_empty() {
+                    (summary_v.verified, false)
+                } else if let Some(relaxed) = &summary_v.relaxed {
+                    screen.println(&ui::verify_relaxed_header(
+                        summary_v.required_passes,
+                        summary_v.total_passes,
+                        relaxed.actual_min,
+                        relaxed.strategies.len(),
+                    ));
+                    for tally in summary_v.tallies.iter().filter(|t| t.pass_count >= relaxed.actual_min) {
+                        screen.println(&ui::verify_tally_line(tally, relaxed.actual_min));
+                    }
+                    (relaxed.strategies.clone(), true)
+                } else {
+                    (vec![], false)
+                }
+            } else {
+                (working, false)
+            };
+
+            summary.push((
+                protocol,
+                final_strategies,
+                stats.successes,
+                stats.failures,
+                stats.errors,
+                stats.elapsed.as_secs_f64(),
+                is_unstable,
+            ));
+        }
+    };
+
+    if timeout_secs > 0 {
+        let deadline = std::time::Duration::from_secs(timeout_secs);
+        if tokio::time::timeout(deadline, scan_future).await.is_err() {
+            timed_out = true;
+            nftables::drop_table(&config.nft_table).await;
+            screen.newline();
+            screen.println(&format!(
+                "{} scan timed out after {}s — showing partial results",
+                style("WARNING:").yellow().bold(),
+                timeout_secs,
+            ));
+        }
+    } else {
+        scan_future.await;
     }
 
     // 4. Summary
     screen.newline();
     screen.println(&ui::section(&format!("Summary for {domain}")));
+
+    if timed_out {
+        screen.println(&format!(
+            "  {} scan timed out after {}s",
+            style("!").yellow().bold(),
+            timeout_secs,
+        ));
+    }
 
     // Available protocols (not blocked)
     for &protocol in protocols {
@@ -405,7 +446,13 @@ async fn run_default(workers: usize) {
 
     let domain = "rutracker.org";
     let protocol = Protocol::Http;
-    let ips = vec!["172.67.182.217".to_string()];
+    let ips = match dns::resolve_ipv4(domain).await {
+        Ok(ips) => ips,
+        Err(e) => {
+            eprintln!("DNS resolve failed for {domain}: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let strategies: Vec<Vec<String>> = vec![
         vec!["--dpi-desync=fake".to_string(), "--dpi-desync-ttl=1".to_string()],
