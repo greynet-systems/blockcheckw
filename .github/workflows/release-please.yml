@@ -8,6 +8,9 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -19,3 +22,72 @@ jobs:
         id: rp
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64,  target: x86_64-unknown-linux-musl,        upx: true  }
+          - { arch: x86,     target: i586-unknown-linux-musl,           upx: true  }
+          - { arch: arm64,   target: aarch64-unknown-linux-musl,        upx: true  }
+          - { arch: arm,     target: arm-unknown-linux-musleabi,         upx: true  }
+          - { arch: mips,    target: mips-unknown-linux-musl,            upx: true  }
+          - { arch: mipsel,  target: mipsel-unknown-linux-musl,          upx: true  }
+          - { arch: mips64,  target: mips64-unknown-linux-muslabi64,      upx: false }
+          - { arch: ppc,     target: powerpc-unknown-linux-musl,         upx: true  }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl,       upx: true  }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@cross
+
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Compress with UPX
+        if: matrix.upx
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: target/${{ matrix.target }}/release/blockcheckw
+          args: --best --lzma
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blockcheckw-linux-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/blockcheckw
+          if-no-files-found: error
+
+  upload-assets:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: blockcheckw-*
+          path: artifacts
+
+      - name: Package archives
+        run: |
+          mkdir -p release
+          for dir in artifacts/blockcheckw-linux-*; do
+            arch=$(basename "$dir" | sed 's/blockcheckw-linux-//')
+            chmod +x "$dir/blockcheckw"
+            tar -czf "release/blockcheckw-linux-${arch}.tar.gz" -C "$dir" blockcheckw
+          done
+
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum blockcheckw-*.tar.gz > SHA256SUMS.txt
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" release/blockcheckw-*.tar.gz release/SHA256SUMS.txt --repo "${{ github.repository }}"
