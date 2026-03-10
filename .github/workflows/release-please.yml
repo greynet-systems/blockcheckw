@@ -31,19 +31,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64,  target: x86_64-unknown-linux-musl,        upx: true  }
-          - { arch: x86,     target: i586-unknown-linux-musl,           upx: true  }
-          - { arch: arm64,   target: aarch64-unknown-linux-musl,        upx: true  }
-          - { arch: arm,     target: arm-unknown-linux-musleabi,         upx: true  }
-          - { arch: mips,    target: mips-unknown-linux-musl,            upx: true  }
-          - { arch: mipsel,  target: mipsel-unknown-linux-musl,          upx: true  }
-          - { arch: mips64,  target: mips64-unknown-linux-muslabi64,      upx: false }
-          - { arch: ppc,     target: powerpc-unknown-linux-musl,         upx: true  }
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl,       upx: true  }
+          - { arch: x86_64,  target: x86_64-unknown-linux-musl,        upx: true,  toolchain: stable }
+          - { arch: x86,     target: i586-unknown-linux-musl,           upx: true,  toolchain: stable }
+          - { arch: arm64,   target: aarch64-unknown-linux-musl,        upx: true,  toolchain: stable }
+          - { arch: arm,     target: arm-unknown-linux-musleabi,         upx: true,  toolchain: stable }
+          - { arch: mips,    target: mips-unknown-linux-musl,            upx: true,  toolchain: nightly }
+          - { arch: mipsel,  target: mipsel-unknown-linux-musl,          upx: true,  toolchain: nightly }
+          - { arch: mips64,  target: mips64-unknown-linux-muslabi64,      upx: false, toolchain: nightly }
+          - { arch: ppc,     target: powerpc-unknown-linux-musl,         upx: true,  toolchain: nightly }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl,       upx: true,  toolchain: nightly }
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rust-src
 
       - uses: taiki-e/install-action@cross
 
