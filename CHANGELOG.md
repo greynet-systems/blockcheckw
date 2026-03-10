@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/greynet-systems/blockcheckw/compare/v0.1.2...v0.1.3) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** добавление `nightly` тулчейна для архитектур без дефолтного std ([e40871e](https://github.com/greynet-systems/blockcheckw/commit/e40871ea9eb31eff711f111743032e69241ba3f7))
+
 ## [0.1.2](https://github.com/greynet-systems/blockcheckw/compare/v0.1.1...v0.1.2) (2026-03-10)
 
 
