@@ -1,7 +1,7 @@
 use crate::config::{CoreConfig, Protocol, NFQWS2_INIT_DELAY_MS};
 use crate::error::{CurlVerdictAvailable, TaskResult};
 use crate::firewall::nftables;
-use crate::network::curl::{curl_test, interpret_curl_result, CurlVerdict};
+use crate::network::curl::{curl_test, interpret_curl_result, pick_random_ip, CurlVerdict};
 use crate::worker::nfqws2::start_nfqws2;
 use crate::worker::slot::WorkerSlot;
 
@@ -55,11 +55,13 @@ pub async fn execute_worker_task(config: &CoreConfig, task: &WorkerTask) -> Task
 
         // Step 4: Run curl test
         let local_port = task.slot.local_port_arg();
+        let ip = pick_random_ip(&task.ips);
         let curl_result = curl_test(
             task.protocol,
             &task.domain,
             Some(&local_port),
             &config.curl_max_time,
+            ip,
         )
         .await;
 

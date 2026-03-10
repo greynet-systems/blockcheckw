@@ -1,5 +1,5 @@
 use crate::config::Protocol;
-use crate::network::curl::{curl_test, interpret_curl_result, CurlVerdict};
+use crate::network::curl::{curl_test, interpret_curl_result, pick_random_ip, CurlVerdict};
 use crate::ui;
 
 pub struct BaselineResult {
@@ -13,8 +13,9 @@ impl BaselineResult {
     }
 }
 
-pub async fn test_baseline(domain: &str, protocol: Protocol, max_time: &str) -> BaselineResult {
-    let curl_result = curl_test(protocol, domain, None, max_time).await;
+pub async fn test_baseline(domain: &str, protocol: Protocol, max_time: &str, ips: &[String]) -> BaselineResult {
+    let ip = pick_random_ip(ips);
+    let curl_result = curl_test(protocol, domain, None, max_time, ip).await;
     let verdict = interpret_curl_result(&curl_result, domain);
     BaselineResult { protocol, verdict }
 }

@@ -60,6 +60,16 @@ pub fn summary_found(protocol: &str, count: usize) -> String {
     )
 }
 
+/// Summary: N unstable strategies found — yellow bold
+pub fn summary_found_unstable(protocol: &str, count: usize) -> String {
+    format!(
+        "  {}{}: {}",
+        WARN,
+        style(protocol).yellow().bold(),
+        style(format!("{count} unstable strategies found")).yellow().bold()
+    )
+}
+
 /// Summary: no working strategies found — red
 pub fn summary_no_strategies(protocol: &str) -> String {
     format!(
@@ -109,47 +119,137 @@ pub fn stats_line(
     )
 }
 
+/// Relaxed summary header: "  no strategies passed 3/3, showing best at 2/3 (unstable):"
+pub fn verify_relaxed_header(required: usize, passes: usize, actual_min: usize, count: usize) -> String {
+    format!(
+        "  {} {}/{}, showing {} best at {}/{} ({}):",
+        style("no strategies passed").yellow(),
+        required,
+        passes,
+        style(count).yellow().bold(),
+        actual_min,
+        passes,
+        style("unstable").yellow().bold(),
+    )
+}
+
+/// Verification summary: "  verified: 8/12 strategies (3/3 passes each)"
+pub fn verify_summary_line(verified: usize, total: usize, required: usize, passes: usize) -> String {
+    format!(
+        "  {}: {}/{} strategies ({}/{} passes each)",
+        style("verified").bold(),
+        style(verified).green().bold(),
+        total,
+        required,
+        passes,
+    )
+}
+
+/// Per-strategy tally: "    ✓ nfqws2 --args: 3/3" or "    ✗ nfqws2 --args: 1/3"
+pub fn verify_tally_line(tally: &crate::pipeline::verify::StrategyTally, required: usize) -> String {
+    let args_str = tally.strategy_args.join(" ");
+    let total = tally.pass_count + tally.fail_count;
+    let ratio = format!("{}/{}", tally.pass_count, total);
+    if tally.pass_count >= required {
+        format!(
+            "    {}nfqws2 {}: {}",
+            CHECKMARK,
+            style(&args_str).cyan(),
+            style(ratio).green(),
+        )
+    } else {
+        format!(
+            "    {}nfqws2 {}: {}",
+            CROSS,
+            style(&args_str).dim(),
+            style(ratio).red(),
+        )
+    }
+}
+
+/// DNS info line for the status bar.
+/// Format: `  DNS: domain → ip1, ip2 (via method) | spoofing: clean`
+pub fn dns_info_line(
+    domain: &str,
+    ips: &[String],
+    method: &str,
+    spoof_result: &Option<crate::network::dns::DnsSpoofResult>,
+) -> String {
+    let spoof_status = match spoof_result {
+        Some(crate::network::dns::DnsSpoofResult::Clean) => format!("{CHECKMARK}clean"),
+        Some(crate::network::dns::DnsSpoofResult::Spoofed { .. }) => format!("{WARN}spoofed!"),
+        Some(crate::network::dns::DnsSpoofResult::CheckFailed { .. }) => format!("{WARN}check failed"),
+        None => "n/a".to_string(),
+    };
+    format!(
+        "  DNS: {} {} {} (via {}) | spoofing: {}",
+        domain,
+        ARROW,
+        ips.join(", "),
+        method,
+        spoof_status,
+    )
+}
+
 /// Layout manager for scan output. Ensures all text goes through `MultiProgress`
 /// so progress bars and vanilla output never interleave.
+/// When no TTY is detected, falls back to plain println.
 pub struct ScanScreen {
     multi: MultiProgress,
     divider_bar: Option<ProgressBar>,
     pb: Option<ProgressBar>,
-    info_bar: Option<ProgressBar>,
+    info_bars: Vec<ProgressBar>,
+    is_tty: bool,
 }
 
 impl ScanScreen {
     pub fn new() -> Self {
+        let is_tty = Term::stderr().is_term();
+        let multi = if is_tty {
+            MultiProgress::new()
+        } else {
+            MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden())
+        };
         Self {
-            multi: MultiProgress::new(),
+            multi,
             divider_bar: None,
             pb: None,
-            info_bar: None,
+            info_bars: Vec::new(),
+            is_tty,
         }
     }
 
     /// Print a line above the progress bar (or just to stdout if no bar active).
     pub fn println(&self, msg: &str) {
-        let _ = self.multi.println(msg);
+        if self.is_tty {
+            let _ = self.multi.println(msg);
+        } else {
+            println!("{msg}");
+        }
     }
 
     /// Print an empty line.
     pub fn newline(&self) {
-        let _ = self.multi.println("");
+        if self.is_tty {
+            let _ = self.multi.println("");
+        } else {
+            println!();
+        }
     }
 
-    /// Set a fixed info line (e.g. ISP info) that stays below the progress bar.
-    pub fn set_info(&mut self, msg: &str) {
+    /// Add a fixed info line that stays below the progress bar.
+    /// Multiple lines can be added (ISP, DNS, etc).
+    pub fn add_info_line(&mut self, msg: &str) {
         let bar = self.multi.add(ProgressBar::new(0));
         bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
         bar.set_message(format!("{}", style(msg).dim()));
         bar.tick();
-        self.info_bar = Some(bar);
+        self.info_bars.push(bar);
     }
 
-    /// Clear and remove the info bar.
+    /// Clear and remove all info bars.
     pub fn finish_info(&mut self) {
-        if let Some(bar) = self.info_bar.take() {
+        for bar in self.info_bars.drain(..) {
             bar.finish_and_clear();
         }
     }
@@ -164,10 +264,10 @@ impl ScanScreen {
 
         // Add to MultiProgress first, then configure — indicatif needs the draw
         // target set up before set_message/enable_steady_tick take effect.
-        let (divider, pb) = if let Some(ref info) = self.info_bar {
+        let (divider, pb) = if let Some(first_info) = self.info_bars.first() {
             (
-                self.multi.insert_before(info, divider),
-                self.multi.insert_before(info, pb),
+                self.multi.insert_before(first_info, divider),
+                self.multi.insert_before(first_info, pb),
             )
         } else {
             (self.multi.add(divider), self.multi.add(pb))

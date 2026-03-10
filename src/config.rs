@@ -4,6 +4,32 @@ pub const PORTS_PER_WORKER: u16 = 10;
 pub const DESYNC_MARK: u32 = 0x10000000;
 pub const NFQWS2_INIT_DELAY_MS: u64 = 50;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsMode {
+    Auto,
+    System,
+    Doh,
+}
+
+impl fmt::Display for DnsMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DnsMode::Auto => write!(f, "auto"),
+            DnsMode::System => write!(f, "system"),
+            DnsMode::Doh => write!(f, "doh"),
+        }
+    }
+}
+
+pub fn parse_dns_mode(s: &str) -> Result<DnsMode, String> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(DnsMode::Auto),
+        "system" => Ok(DnsMode::System),
+        "doh" => Ok(DnsMode::Doh),
+        _ => Err(format!("unknown dns mode: '{s}'. expected: auto, system, doh")),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
     pub worker_count: usize,
@@ -133,5 +159,27 @@ mod tests {
     fn test_protocol_all() {
         let all = Protocol::all();
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_dns_mode_valid() {
+        assert_eq!(parse_dns_mode("auto").unwrap(), DnsMode::Auto);
+        assert_eq!(parse_dns_mode("system").unwrap(), DnsMode::System);
+        assert_eq!(parse_dns_mode("doh").unwrap(), DnsMode::Doh);
+        assert_eq!(parse_dns_mode("DOH").unwrap(), DnsMode::Doh);
+        assert_eq!(parse_dns_mode("Auto").unwrap(), DnsMode::Auto);
+    }
+
+    #[test]
+    fn test_parse_dns_mode_invalid() {
+        assert!(parse_dns_mode("plain").is_err());
+        assert!(parse_dns_mode("").is_err());
+    }
+
+    #[test]
+    fn test_dns_mode_display() {
+        assert_eq!(DnsMode::Auto.to_string(), "auto");
+        assert_eq!(DnsMode::System.to_string(), "system");
+        assert_eq!(DnsMode::Doh.to_string(), "doh");
     }
 }

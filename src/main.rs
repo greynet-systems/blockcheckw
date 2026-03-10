@@ -5,13 +5,15 @@ use console::style;
 use tokio::signal;
 use tracing::info;
 
-use blockcheckw::config::{CoreConfig, Protocol};
+use blockcheckw::config::{CoreConfig, DnsMode, Protocol};
 use blockcheckw::error::TaskResult;
 use blockcheckw::firewall::nftables;
 use blockcheckw::network::{dns, isp};
+use blockcheckw::network::dns::DnsSpoofResult;
 use blockcheckw::pipeline::baseline;
 use blockcheckw::pipeline::benchmark;
 use blockcheckw::pipeline::runner::run_parallel;
+use blockcheckw::pipeline::verify::{self, VerifyConfig};
 use blockcheckw::strategy::generator;
 use blockcheckw::ui;
 
@@ -52,6 +54,26 @@ enum Command {
         /// Protocols to test (comma-separated: http,tls12,tls13)
         #[arg(short, long, default_value = "http,tls12,tls13")]
         protocols: String,
+
+        /// DNS resolution mode: auto, system, doh
+        #[arg(long, default_value = "auto")]
+        dns: String,
+
+        /// Number of verification passes (0 = skip verification)
+        #[arg(long, default_value_t = 3)]
+        verify_passes: usize,
+
+        /// Minimum passes required to consider a strategy verified (default: = verify-passes)
+        #[arg(long)]
+        verify_min: Option<usize>,
+
+        /// curl --max-time for verification passes (seconds)
+        #[arg(long, default_value = "3")]
+        verify_timeout: String,
+
+        /// Show per-strategy verification tallies
+        #[arg(long)]
+        verbose: bool,
     },
 }
 
@@ -72,7 +94,15 @@ async fn main() {
             let max = max_workers.unwrap_or_else(benchmark::default_max_workers);
             benchmark::run_benchmark(strategies, max, raw).await;
         }
-        Some(Command::Scan { domain, protocols }) => {
+        Some(Command::Scan {
+            domain,
+            protocols,
+            dns,
+            verify_passes,
+            verify_min,
+            verify_timeout,
+            verbose,
+        }) => {
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
                 .init();
@@ -84,13 +114,25 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            run_scan(cli.workers, &domain, &protocols).await;
+            let dns_mode = match blockcheckw::config::parse_dns_mode(&dns) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("ERROR: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let verify_config = VerifyConfig {
+                passes: verify_passes,
+                min_passes: verify_min.unwrap_or(verify_passes),
+                curl_max_time: verify_timeout,
+            };
+            run_scan(cli.workers, &domain, &protocols, dns_mode, &verify_config, verbose).await;
         }
         None => run_default(cli.workers).await,
     }
 }
 
-async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
+async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode: DnsMode, verify_config: &VerifyConfig, verbose: bool) {
     let config = Arc::new(CoreConfig {
         worker_count: workers,
         ..CoreConfig::default()
@@ -110,20 +152,59 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
 
     // 0. ISP info
     if let Some(info) = isp::detect_ip_info().await {
-        screen.set_info(&format!("  ISP: {info}"));
+        screen.add_info_line(&format!("  ISP: {info}"));
     }
 
     // 1. DNS resolve
     screen.println(&ui::section("DNS resolve"));
-    let ips = match dns::resolve_ipv4(domain).await {
-        Ok(ips) => {
+    screen.println(&format!("  dns mode: {}", style(dns_mode.to_string()).bold()));
+    let ips = match dns::resolve_domain(domain, dns_mode).await {
+        Ok(resolution) => {
             screen.println(&format!(
-                "  {} {} {}",
+                "  {} {} {} (via {})",
                 domain,
                 ui::ARROW,
-                style(ips.join(", ")).bold()
+                style(resolution.ips.join(", ")).bold(),
+                resolution.method,
             ));
-            ips
+
+            // Show spoofing check result in output and info bar
+            if let Some(ref spoof) = resolution.spoof_result {
+                match spoof {
+                    DnsSpoofResult::Clean => {
+                        screen.println(&format!(
+                            "  {}DNS spoofing check: {}",
+                            ui::CHECKMARK,
+                            style("clean").green(),
+                        ));
+                    }
+                    DnsSpoofResult::Spoofed { details } => {
+                        screen.println(&format!(
+                            "  {}DNS spoofing detected: {}",
+                            ui::WARN,
+                            style(details).yellow().bold(),
+                        ));
+                    }
+                    DnsSpoofResult::CheckFailed { reason } => {
+                        screen.println(&format!(
+                            "  {}DNS spoofing check failed: {}",
+                            ui::WARN,
+                            style(reason).yellow(),
+                        ));
+                    }
+                }
+            }
+
+            // Add DNS info to status bar
+            let dns_status = ui::dns_info_line(
+                domain,
+                &resolution.ips,
+                resolution.method,
+                &resolution.spoof_result,
+            );
+            screen.add_info_line(&dns_status);
+
+            resolution.ips
         }
         Err(e) => {
             eprintln!("{} {e}", style("ERROR:").red().bold());
@@ -137,7 +218,7 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     let mut blocked_protocols = Vec::new();
 
     for &protocol in protocols {
-        let result = baseline::test_baseline(domain, protocol, &config.curl_max_time).await;
+        let result = baseline::test_baseline(domain, protocol, &config.curl_max_time, &ips).await;
         screen.println(&baseline::format_baseline_verdict_styled(&result));
         if result.is_blocked() {
             blocked_protocols.push(protocol);
@@ -158,7 +239,8 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     screen.println(&ui::blocked_list(&blocked_names.join(", ")));
 
     // 3. Scan each blocked protocol
-    let mut summary: Vec<(Protocol, Vec<Vec<String>>, usize, usize, usize, f64)> = Vec::new();
+    //                       protocol, strategies,    success, fail,  err,   elapsed, unstable
+    let mut summary: Vec<(Protocol, Vec<Vec<String>>, usize, usize, usize, f64, bool)> = Vec::new();
 
     for &protocol in &blocked_protocols {
         screen.newline();
@@ -200,13 +282,69 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
             stats.throughput(),
         ));
 
+        // 3b. Verification
+        let (final_strategies, is_unstable) = if verify_config.passes > 0 && !working.is_empty() {
+            screen.newline();
+            screen.println(&ui::section(&format!("Verifying {protocol}")));
+            screen.println(&format!(
+                "  {} candidates, {} passes, timeout={}s",
+                style(working.len()).bold(),
+                style(verify_config.passes).bold(),
+                verify_config.curl_max_time,
+            ));
+
+            let summary_v = verify::run_verification(
+                &config,
+                domain,
+                protocol,
+                &working,
+                &ips,
+                verify_config,
+                &mut screen,
+            )
+            .await;
+
+            screen.println(&ui::verify_summary_line(
+                summary_v.verified_count,
+                summary_v.total_candidates,
+                summary_v.required_passes,
+                summary_v.total_passes,
+            ));
+
+            if verbose {
+                for tally in &summary_v.tallies {
+                    screen.println(&ui::verify_tally_line(tally, summary_v.required_passes));
+                }
+            }
+
+            if !summary_v.verified.is_empty() {
+                (summary_v.verified, false)
+            } else if let Some(relaxed) = &summary_v.relaxed {
+                screen.println(&ui::verify_relaxed_header(
+                    summary_v.required_passes,
+                    summary_v.total_passes,
+                    relaxed.actual_min,
+                    relaxed.strategies.len(),
+                ));
+                for tally in summary_v.tallies.iter().filter(|t| t.pass_count >= relaxed.actual_min) {
+                    screen.println(&ui::verify_tally_line(tally, relaxed.actual_min));
+                }
+                (relaxed.strategies.clone(), true)
+            } else {
+                (vec![], false)
+            }
+        } else {
+            (working, false)
+        };
+
         summary.push((
             protocol,
-            working,
+            final_strategies,
             stats.successes,
             stats.failures,
             stats.errors,
             stats.elapsed.as_secs_f64(),
+            is_unstable,
         ));
     }
 
@@ -222,13 +360,18 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol]) {
     }
 
     // Blocked protocols results
-    for (protocol, working, _successes, _failures, _errors, _elapsed) in &summary {
+    for (protocol, strategies, _successes, _failures, _errors, _elapsed, unstable) in &summary {
         let proto = protocol.to_string();
-        if working.is_empty() {
+        if strategies.is_empty() {
             screen.println(&ui::summary_no_strategies(&proto));
+        } else if *unstable {
+            screen.println(&ui::summary_found_unstable(&proto, strategies.len()));
+            for args in strategies {
+                screen.println(&ui::strategy_line(&args.join(" ")));
+            }
         } else {
-            screen.println(&ui::summary_found(&proto, working.len()));
-            for args in working {
+            screen.println(&ui::summary_found(&proto, strategies.len()));
+            for args in strategies {
                 screen.println(&ui::strategy_line(&args.join(" ")));
             }
         }

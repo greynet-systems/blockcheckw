@@ -16,15 +16,16 @@
 ### Pipeline команды scan
 
 ```
-ISP detect → DNS resolve → Baseline → Generate strategies → Run parallel → Summary
+ISP detect → DNS resolve (+ spoofing check) → Baseline → Generate strategies → Run parallel → Verify → Summary
 ```
 
 1. **ISP detect** — определяет провайдера через `curl ipinfo.io` (IP, ASN, город). Отображается как фиксированная строка под progress bar на протяжении всего сканирования
-2. **DNS resolve** — резолвит домен через `getent ahostsv4`, fallback на `nslookup`
-3. **Baseline** — проверяет каждый протокол без bypass (curl без `--local-port`), определяет заблокированные
+2. **DNS resolve** — резолвит домен с учётом `--dns` режима (см. ниже). В режиме `auto` автоматически обнаруживает DNS spoofing и переключается на DoH
+3. **Baseline** — проверяет каждый протокол без bypass (curl с `--connect-to` для привязки к резолвленному IP), определяет заблокированные
 4. **Generate** — генерирует все стратегии для заблокированных протоколов (2449 HTTP / 9828 TLS1.3 / 19644 TLS1.2)
-5. **Run parallel** — прогоняет стратегии параллельно через worker pool
-6. **Summary** — выводит найденные рабочие стратегии
+5. **Run parallel** — прогоняет стратегии параллельно через worker pool (быстрый скан, таймаут 1s). Каждый curl-запрос использует `--connect-to` для привязки к резолвленному IP
+6. **Verify** — перепроверяет найденные стратегии N раз с увеличенным таймаутом (3s), отсеивает нестабильные (false positives из-за сетевого джиттера)
+7. **Summary** — выводит только верифицированные стратегии
 
 ## Сборка
 
@@ -32,7 +33,7 @@ ISP detect → DNS resolve → Baseline → Generate strategies → Run parallel
 cargo build --release
 ```
 
-Кросс-компиляция для роутера (aarch64 + OpenWrt/musl):
+Кросс-компиляция и деплой для роутера (aarch64 + OpenWrt/musl):
 ```shell
 cargo build --release --target aarch64-unknown-linux-musl &&
 scp target/aarch64-unknown-linux-musl/release/blockcheckw root@router:/tmp/
@@ -123,28 +124,70 @@ blockcheckw scan
 
 ```
 === DNS resolve ===
-  rutracker.org → 172.67.182.217
+  dns mode: auto
+  rutracker.org → 104.21.32.39, 172.67.182.196 (via system)
+  ✓ DNS spoofing check: clean
 
 === Baseline (without bypass) ===
-  ✓ HTTP: BLOCKED (UNAVAILABLE code=28)
-  ✓ HTTPS/TLS1.2: BLOCKED (UNAVAILABLE code=28)
+  ✗ HTTP: BLOCKED (UNAVAILABLE code=28)
+  ✗ HTTPS/TLS1.2: BLOCKED (UNAVAILABLE code=28)
   ✓ HTTPS/TLS1.3: available without bypass
 
 Blocked protocols: HTTP, HTTPS/TLS1.2
 
 === Scanning HTTP ===
   generated 2449 strategies, workers=64
-────────────────────────────────────────────────────
-⠋ [00:01:52] [===============>        ] 2400/2449 (21.4/s, ETA 0s)
-  ISP: AS1234 Rostelecom | 1.2.3.4 | Moscow, Moscow, RU
-  completed: 2449 | success: 12 | failed: 2437 | errors: 0 | 114.3s (21.4 strat/sec)
+  completed: 2449 | success: 149 | failed: 2300 | errors: 0 | 86.4s (28.4 strat/sec)
+
+=== Verifying HTTP ===
+  149 candidates, 3 passes, timeout=3s
+  verify pass 1/3
+  verify pass 2/3
+  verify pass 3/3
+  verified: 8/149 strategies (3/3 passes each)
 
 === Summary for rutracker.org ===
   ✓ HTTPS/TLS1.3: working without bypass
-  ✓ HTTP: 12 working strategies found
+  ✓ HTTP: 8 working strategies found
     → nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:ip_ttl=4:repeats=1
     ...
   ✗ HTTPS/TLS1.2: no working strategies found
+```
+
+#### DNS и `--connect-to`
+
+По умолчанию curl делает собственный DNS-резолв, что приводит к проблемам:
+- Если DNS отравлен, curl идёт на IP заглушки, а nftables ловит трафик на правильном IP — мимо
+- Даже без poisoning, DNS-ответы могут отличаться от того, что резолвил blockcheckw
+
+Решение: blockcheckw резолвит домен один раз и передаёт IP в каждый curl через `--connect-to domain::ip:`.
+Это гарантирует, что curl, nftables и nfqws2 работают с одним и тем же IP.
+
+**DNS режимы** (`--dns`):
+
+| Режим    | Поведение |
+|:---------|:----------|
+| `auto`   | System DNS + проверка на spoofing (сравнивает результаты system DNS и DoH для известных заблокированных доменов). Если spoofing обнаружен — автоматически переключается на DoH |
+| `system` | Только system DNS (`getent` / `nslookup`), без проверки на spoofing |
+| `doh`    | Только DNS-over-HTTPS (Cloudflare, Google, Quad9) |
+
+**DoH резолвер** автоматически перебирает серверы (Cloudflare → Google → Quad9) и использует первый доступный. Запросы идут через Cloudflare JSON API (`application/dns-json`).
+
+**Spoofing detection** резолвит 3 домена (`rutracker.org`, `pornhub.com`, `torproject.org`) через system DNS и DoH, сравнивает результаты. Если IP различаются или все домены резолвятся в один IP (captive portal) — сигнализирует spoofing.
+
+#### Как работает верификация
+
+Быстрый скан (таймаут 1s) может давать false positives — стратегии, которые «сработали» случайно из-за сетевого джиттера. Верификация перепроверяет каждого кандидата:
+
+- Прогоняет **только найденные стратегии** (не все 2449) — это быстро
+- Каждая стратегия проверяется **N раз** (по умолчанию 3)
+- Таймаут увеличен до **3 секунд** (vs 1s при скане) — строже
+- В Summary попадают только стратегии, прошедшие **все N проверок**
+
+С `--verbose` видно детали по каждой стратегии:
+```
+  ✓ nfqws2 --payload=http_req --lua-desync=fake:ip_ttl=4: 3/3
+  ✗ nfqws2 --payload=http_req --lua-desync=fake:ip_ttl=1: 1/3
 ```
 
 **Флаги:**
@@ -153,6 +196,11 @@ Blocked protocols: HTTP, HTTPS/TLS1.2
 |:-----|:---------|:-------------|
 | `-d` / `--domain` | Домен для проверки | `rutracker.org` |
 | `-p` / `--protocols` | Протоколы через запятую: `http`, `tls12`, `tls13` | `http,tls12,tls13` |
+| `--dns MODE` | DNS режим: `auto`, `system`, `doh` | `auto` |
+| `--verify-passes N` | Количество проверочных прогонов (0 = пропустить) | `3` |
+| `--verify-min N` | Минимум успешных прогонов для верификации | `= verify-passes` |
+| `--verify-timeout T` | Таймаут curl при верификации (секунды) | `3` |
+| `--verbose` | Показать результат по каждой стратегии | off |
 
 **Примеры:**
 
@@ -165,6 +213,21 @@ blockcheckw -w 32 scan -d example.com -p tls12,tls13
 
 # Все протоколы (по умолчанию)
 blockcheckw -w 64 scan
+
+# Принудительный DoH (в сетях с отравленным DNS)
+blockcheckw -w 64 scan --dns doh
+
+# System DNS без spoofing check
+blockcheckw -w 64 scan --dns system
+
+# Без верификации (как раньше)
+blockcheckw -w 64 scan --verify-passes 0
+
+# Мягкая верификация: 2 из 3 достаточно
+blockcheckw -w 64 scan --verify-min 2
+
+# 5 проходов, подробный вывод
+blockcheckw -w 64 scan --verify-passes 5 --verbose
 ```
 
 ## Производительность
