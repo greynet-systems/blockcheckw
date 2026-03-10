@@ -93,6 +93,16 @@ pub fn pick_random_ip(ips: &[String]) -> Option<&str> {
     Some(&ips[nanos % ips.len()])
 }
 
+/// Base curl args for HTTP test (without URL, local-port, connect-to).
+fn base_http_args(max_time: &str) -> Vec<&str> {
+    vec![
+        "curl", "-4", "--noproxy", "*",
+        "-SsD", "-", "-A", "Mozilla/5.0",
+        "--max-time", max_time,
+        "-o", "/dev/null",
+    ]
+}
+
 pub async fn curl_test_http(
     domain: &str,
     local_port: Option<&str>,
@@ -100,12 +110,7 @@ pub async fn curl_test_http(
     ip: Option<&str>,
 ) -> CurlResult {
     let url = format!("http://{domain}");
-    let mut args = vec![
-        "curl", "-4", "--noproxy", "*",
-        "-SsD", "-", "-A", "Mozilla/5.0",
-        "--connect-timeout", max_time, "--max-time", max_time,
-        "-o", "/dev/null",
-    ];
+    let mut args = base_http_args(max_time);
 
     let port_args = local_port_args(local_port);
     let port_refs: Vec<&str> = port_args.iter().map(|s| s.as_str()).collect();
@@ -125,6 +130,28 @@ pub async fn curl_test_http(
     }
 }
 
+/// Base curl args for HTTPS TLS 1.2 test.
+fn base_https_tls12_args(max_time: &str) -> Vec<&str> {
+    vec![
+        "curl", "-4", "--noproxy", "*",
+        "-Ss", "-A", "Mozilla/5.0",
+        "--max-time", max_time,
+        "--tlsv1.2", "--tls-max", "1.2",
+        "-o", "/dev/null",
+    ]
+}
+
+/// Base curl args for HTTPS TLS 1.3 test.
+fn base_https_tls13_args(max_time: &str) -> Vec<&str> {
+    vec![
+        "curl", "-4", "--noproxy", "*",
+        "-Ss", "-A", "Mozilla/5.0",
+        "--max-time", max_time,
+        "--tlsv1.3", "--tls-max", "1.3",
+        "-o", "/dev/null",
+    ]
+}
+
 pub async fn curl_test_https_tls12(
     domain: &str,
     local_port: Option<&str>,
@@ -132,13 +159,7 @@ pub async fn curl_test_https_tls12(
     ip: Option<&str>,
 ) -> CurlResult {
     let url = format!("https://{domain}");
-    let mut args = vec![
-        "curl", "-4", "--noproxy", "*",
-        "-Ss", "-A", "Mozilla/5.0",
-        "--connect-timeout", max_time, "--max-time", max_time,
-        "--tlsv1.2", "--tls-max", "1.2",
-        "-o", "/dev/null",
-    ];
+    let mut args = base_https_tls12_args(max_time);
 
     let port_args = local_port_args(local_port);
     let port_refs: Vec<&str> = port_args.iter().map(|s| s.as_str()).collect();
@@ -165,13 +186,7 @@ pub async fn curl_test_https_tls13(
     ip: Option<&str>,
 ) -> CurlResult {
     let url = format!("https://{domain}");
-    let mut args = vec![
-        "curl", "-4", "--noproxy", "*",
-        "-Ss", "-A", "Mozilla/5.0",
-        "--connect-timeout", max_time, "--max-time", max_time,
-        "--tlsv1.3", "--tls-max", "1.3",
-        "-o", "/dev/null",
-    ];
+    let mut args = base_https_tls13_args(max_time);
 
     let port_args = local_port_args(local_port);
     let port_refs: Vec<&str> = port_args.iter().map(|s| s.as_str()).collect();
@@ -358,5 +373,23 @@ mod tests {
             interpret_curl_result(&result, "example.com"),
             CurlVerdict::Available
         ));
+    }
+
+    #[test]
+    fn curl_http_args_no_connect_timeout() {
+        let args = base_http_args("2");
+        assert!(!args.contains(&"--connect-timeout"), "HTTP args must not contain --connect-timeout");
+    }
+
+    #[test]
+    fn curl_https_tls12_args_no_connect_timeout() {
+        let args = base_https_tls12_args("2");
+        assert!(!args.contains(&"--connect-timeout"), "HTTPS TLS1.2 args must not contain --connect-timeout");
+    }
+
+    #[test]
+    fn curl_https_tls13_args_no_connect_timeout() {
+        let args = base_https_tls13_args("2");
+        assert!(!args.contains(&"--connect-timeout"), "HTTPS TLS1.3 args must not contain --connect-timeout");
     }
 }

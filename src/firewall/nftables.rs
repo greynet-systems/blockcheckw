@@ -129,6 +129,37 @@ fn build_worker_rule_args(
         .collect()
 }
 
+/// Build nft arguments for a per-worker incoming SYN,ACK rule in prenat chain.
+/// This directs server SYN,ACK responses into the nfqws2 queue so it can determine
+/// the server's TTL (required for autottl strategies).
+///
+/// Unlike blockcheck2.sh (which runs one worker at a time), we run many workers in parallel.
+/// Each worker uses a unique local port range (sport_range). In the server's SYN,ACK response,
+/// the server's port is `sport` and our local port is `dport`. We filter on both to ensure
+/// each worker's nfqws2 instance receives only its own SYN,ACK packets.
+///
+/// The rule is passed as a single string argument to nft (matching blockcheck2.sh behavior),
+/// with `--echo --handle` as separate preceding args to get the handle back.
+fn build_incoming_rule_args(
+    table: &str,
+    sport_range: &str,
+    dport: u16,
+    qnum: u16,
+    ips: &[String],
+) -> Vec<String> {
+    let ip_set = ips.join(", ");
+    let rule = format!(
+        "add rule inet {table} {CHAIN_PRENAT} \
+         meta nfproto ipv4 \
+         tcp sport {dport} \
+         tcp dport {sport_range} \
+         tcp flags & (syn | ack) == (syn | ack) \
+         ip saddr {{ {ip_set} }} \
+         queue num {qnum}"
+    );
+    vec!["--echo".into(), "--handle".into(), rule]
+}
+
 /// Add a per-worker nftables rule and return its handle for later removal.
 pub async fn add_worker_rule(
     table: &str,
@@ -145,10 +176,35 @@ pub async fn add_worker_rule(
     parse_handle(&stdout)
 }
 
-/// Remove a specific rule by its handle.
+/// Add a per-worker incoming SYN,ACK rule in prenat and return its handle.
+/// This allows nfqws2 to see server SYN,ACK responses for autottl detection.
+pub async fn add_incoming_rule(
+    table: &str,
+    sport_range: &str,
+    dport: u16,
+    qnum: u16,
+    ips: &[String],
+) -> Result<RuleHandle, BlockcheckError> {
+    let args = build_incoming_rule_args(table, sport_range, dport, qnum, ips);
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    let stdout = run_nft(&refs).await?;
+
+    parse_handle(&stdout)
+}
+
+/// Remove a specific rule from postnat by its handle.
 pub async fn remove_rule(table: &str, handle: RuleHandle) -> Result<(), BlockcheckError> {
     let handle_str = handle.0.to_string();
     run_nft(&["delete", "rule", "inet", table, CHAIN_POSTNAT, "handle", &handle_str])
+        .await?;
+    Ok(())
+}
+
+/// Remove a specific rule from prenat by its handle.
+pub async fn remove_prenat_rule(table: &str, handle: RuleHandle) -> Result<(), BlockcheckError> {
+    let handle_str = handle.0.to_string();
+    run_nft(&["delete", "rule", "inet", table, CHAIN_PRENAT, "handle", &handle_str])
         .await?;
     Ok(())
 }
@@ -286,5 +342,51 @@ mod tests {
         assert!(joined.contains("10.0.0.1"), "should include single ip");
         assert!(joined.contains("dport 443"), "should include dport 443");
         assert!(joined.contains("queue num 201"), "should include queue 201");
+    }
+
+    #[test]
+    fn incoming_rule_args_structure() {
+        let ips = vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()];
+        let args = build_incoming_rule_args("zapret", "30000-30009", 80, 200, &ips);
+
+        // Should have 3 elements: --echo, --handle, and the rule string
+        assert_eq!(args.len(), 3);
+        assert_eq!(&args[0], "--echo");
+        assert_eq!(&args[1], "--handle");
+
+        let rule = &args[2];
+
+        // Should target prenat chain (not postnat)
+        assert!(rule.contains("prenat"), "should target prenat chain");
+        assert!(!rule.contains("postnat"), "should NOT target postnat chain");
+
+        // Server port becomes sport in response packets
+        assert!(rule.contains("tcp sport 80"), "should have tcp sport = server port");
+
+        // Our local port range becomes dport in response packets
+        assert!(rule.contains("tcp dport 30000-30009"), "should have tcp dport = our local port range");
+
+        // Should match SYN,ACK flags
+        assert!(rule.contains("tcp flags & (syn | ack) == (syn | ack)"), "should match SYN,ACK flags");
+
+        // Should use saddr (source = server IP in response)
+        assert!(rule.contains("ip saddr"), "should match ip saddr");
+
+        // Should have ip set
+        assert!(rule.contains("1.2.3.4, 5.6.7.8"), "should include ip set");
+
+        // Should have queue num
+        assert!(rule.contains("queue num 200"), "should include queue num");
+    }
+
+    #[test]
+    fn incoming_rule_args_single_ip() {
+        let ips = vec!["10.0.0.1".to_string()];
+        let args = build_incoming_rule_args("zapret", "30010-30019", 443, 201, &ips);
+        let rule = &args[2];
+        assert!(rule.contains("tcp sport 443"), "should have sport 443");
+        assert!(rule.contains("tcp dport 30010-30019"), "should have dport = local port range");
+        assert!(rule.contains("10.0.0.1"), "should include single ip");
+        assert!(rule.contains("queue num 201"), "should include queue 201");
     }
 }

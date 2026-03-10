@@ -51,7 +51,7 @@ impl Default for CoreConfig {
             base_local_port: 30000,
             nft_table: "zapret".to_string(),
             nfqws2_path: detect_nfqws2_path("/opt/zapret2"),
-            curl_max_time: "1".to_string(),
+            curl_max_time: "2".to_string(),
             zapret_base: "/opt/zapret2".to_string(),
             nfqws2_uid: 1,
             nfqws2_gid: 3003,
