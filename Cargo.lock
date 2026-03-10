@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "blockcheckw"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "clap",
  "console",

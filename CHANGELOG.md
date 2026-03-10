@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.10](https://github.com/greynet-systems/blockcheckw/compare/v0.1.9...v0.1.10) (2026-03-10)
+
+
+### Bug Fixes
+
+* **nfqws2:** incoming SYN,ACK rule для работоспособности autottl ([7d15e7e](https://github.com/greynet-systems/blockcheckw/commit/7d15e7e00ea648df2795c312b25de391c5449114))
+* **nfqws2:** incoming SYN,ACK rule для работоспособности autottl ([c815b1d](https://github.com/greynet-systems/blockcheckw/commit/c815b1d73e39f59bed886b34b4335cadd6d72a42))
+* **nfqws2:** predefrag/prenat/--uid ([6b01ff2](https://github.com/greynet-systems/blockcheckw/commit/6b01ff23272d161a461e0f41632a0c868f2ffeaa))
+
 ## [0.1.9](https://github.com/greynet-systems/blockcheckw/compare/v0.1.8...v0.1.9) (2026-03-10)
 
 
