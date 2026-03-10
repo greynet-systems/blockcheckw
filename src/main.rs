@@ -276,6 +276,17 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode
 
     let scan_future = async {
         for &protocol in &blocked_protocols {
+            // Re-check for conflicts before each protocol scan
+            let conflicts = detect_bypass_conflicts(&config.nft_table).await;
+            if !conflicts.is_empty() {
+                screen.println(&format!(
+                    "  {} {}",
+                    style("!").yellow().bold(),
+                    style("conflicting DPI bypass restarted, killing again...").yellow(),
+                ));
+                resolve_bypass_conflicts(&conflicts).await;
+            }
+
             screen.newline();
             screen.println(&ui::section(&format!("Scanning {protocol}")));
             let strategies = generator::generate_strategies(protocol);
@@ -317,6 +328,17 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode
 
             // 3b. Verification
             let (final_strategies, is_unstable) = if verify_config.passes > 0 && !working.is_empty() {
+                // Re-check for conflicts before verify (production services may have restarted)
+                let conflicts = detect_bypass_conflicts(&config.nft_table).await;
+                if !conflicts.is_empty() {
+                    screen.println(&format!(
+                        "  {} {}",
+                        style("!").yellow().bold(),
+                        style("conflicting DPI bypass restarted during scan, killing again...").yellow(),
+                    ));
+                    resolve_bypass_conflicts(&conflicts).await;
+                }
+
                 screen.newline();
                 screen.println(&ui::section(&format!("Verifying {protocol}")));
                 screen.println(&format!(
