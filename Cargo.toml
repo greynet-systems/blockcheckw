@@ -20,3 +20,10 @@ libc = "0.2"
 [[test]]
 name = "parallel_benchmark"
 path = "tests/parallel_benchmark.rs"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
