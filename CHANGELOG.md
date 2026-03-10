@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/greynet-systems/blockcheckw/compare/v0.1.4...v0.1.5) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** отказ от Cross.toml, добавление build-no-docker для двух платформ ([c4cb004](https://github.com/greynet-systems/blockcheckw/commit/c4cb004dd031dcf52b9804f78e93509e90da9ca9))
+
 ## [0.1.4](https://github.com/greynet-systems/blockcheckw/compare/v0.1.3...v0.1.4) (2026-03-10)
 
 
