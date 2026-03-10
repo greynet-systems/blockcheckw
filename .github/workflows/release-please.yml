@@ -31,27 +31,76 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64,  target: x86_64-unknown-linux-musl,        upx: true,  toolchain: stable }
-          - { arch: x86,     target: i586-unknown-linux-musl,           upx: true,  toolchain: stable }
-          - { arch: arm64,   target: aarch64-unknown-linux-musl,        upx: true,  toolchain: stable }
-          - { arch: arm,     target: arm-unknown-linux-musleabi,         upx: true,  toolchain: stable }
-          - { arch: mips,    target: mips-unknown-linux-musl,            upx: true,  toolchain: nightly }
-          - { arch: mipsel,  target: mipsel-unknown-linux-musl,          upx: true,  toolchain: nightly }
-          - { arch: mips64,  target: mips64-unknown-linux-muslabi64,      upx: false, toolchain: nightly }
-          - { arch: ppc,     target: powerpc-unknown-linux-musl,         upx: true,  toolchain: nightly }
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl,       upx: true,  toolchain: nightly }
+          # Tier 2 — cross has Docker images, pre-built std available
+          - { arch: x86_64, target: x86_64-unknown-linux-musl,      upx: true  }
+          - { arch: x86,    target: i586-unknown-linux-musl,         upx: true  }
+          - { arch: arm64,  target: aarch64-unknown-linux-musl,      upx: true  }
+          - { arch: arm,    target: arm-unknown-linux-musleabi,       upx: true  }
+          # Tier 2/3 — cross has Docker images, but no pre-built std (need build-std)
+          - { arch: mips,   target: mips-unknown-linux-musl,         upx: true  }
+          - { arch: mipsel, target: mipsel-unknown-linux-musl,       upx: true  }
+          - { arch: mips64, target: mips64-unknown-linux-muslabi64,  upx: false }
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: ${{ matrix.toolchain }}
           components: rust-src
 
       - uses: taiki-e/install-action@cross
 
       - name: Build
         run: cross build --release --target ${{ matrix.target }}
+        env:
+          CROSS_BUILD_STD: "1"
+
+      - name: Compress with UPX
+        if: matrix.upx
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: target/${{ matrix.target }}/release/blockcheckw
+          args: --best --lzma
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blockcheckw-linux-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/blockcheckw
+          if-no-files-found: error
+
+  build-no-docker:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ppc
+            target: powerpc-unknown-linux-musl
+            upx: true
+            linker: powerpc-linux-gnu
+            apt: gcc-powerpc-linux-gnu
+          - arch: riscv64
+            target: riscv64gc-unknown-linux-musl
+            upx: true
+            linker: riscv64-linux-gnu
+            apt: gcc-riscv64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install cross-linker
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ${{ matrix.apt }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -Zbuild-std=std,panic_abort
+        env:
+          CARGO_TARGET_POWERPC_UNKNOWN_LINUX_MUSL_LINKER: powerpc-linux-gnu-gcc
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER: riscv64-linux-gnu-gcc
 
       - name: Compress with UPX
         if: matrix.upx
@@ -69,7 +118,7 @@ jobs:
 
   upload-assets:
     if: needs.release-please.outputs.release_created == 'true'
-    needs: [release-please, build]
+    needs: [release-please, build, build-no-docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
