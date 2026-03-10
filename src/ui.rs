@@ -248,6 +248,12 @@ pub struct ScanScreen {
     is_tty: bool,
 }
 
+impl Default for ScanScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScanScreen {
     pub fn new() -> Self {
         let is_tty = Term::stderr().is_term();

@@ -222,7 +222,7 @@ pub fn interpret_curl_result(result: &CurlResult, domain: &str) -> CurlVerdict {
                 .headers
                 .lines()
                 .find(|line| line.to_lowercase().starts_with("location:"))
-                .map(|line| line.splitn(2, ':').nth(1).unwrap_or("").trim().to_string())
+                .map(|line| line.split_once(':').map(|x| x.1).unwrap_or("").trim().to_string())
                 .unwrap_or_default();
 
             if location.to_lowercase().contains(&domain.to_lowercase()) {

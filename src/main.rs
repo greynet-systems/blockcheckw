@@ -151,6 +151,7 @@ async fn main() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode: DnsMode, verify_config: &VerifyConfig, verbose: bool, timeout_secs: u64, top_n: usize) {
     let config = Arc::new(CoreConfig {
         worker_count: workers,
@@ -259,6 +260,7 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode
 
     // 3. Scan each blocked protocol
     //                       protocol, strategies,    success, fail,  err,   elapsed, unstable
+    #[allow(clippy::type_complexity)]
     let mut summary: Vec<(Protocol, Vec<Vec<String>>, usize, usize, usize, f64, bool)> = Vec::new();
     let mut timed_out = false;
 
