@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/greynet-systems/blockcheckw/compare/v0.1.8...v0.1.9) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** замена зеркал для musl-тулчейнов ([224ed7d](https://github.com/greynet-systems/blockcheckw/commit/224ed7d0d79222ad12cf3792001e60a561fddca7))
+
 ## [0.1.8](https://github.com/greynet-systems/blockcheckw/compare/v0.1.7...v0.1.8) (2026-03-10)
 
 
