@@ -1,14 +1,14 @@
 [target.mips-unknown-linux-musl]
-build-std = ["std", "panic_abort"]
+build-std = true
 
 [target.mipsel-unknown-linux-musl]
-build-std = ["std", "panic_abort"]
+build-std = true
 
 [target.mips64-unknown-linux-muslabi64]
-build-std = ["std", "panic_abort"]
+build-std = true
 
 [target.powerpc-unknown-linux-musl]
-build-std = ["std", "panic_abort"]
+build-std = true
 
 [target.riscv64gc-unknown-linux-musl]
-build-std = ["std", "panic_abort"]
+build-std = true
