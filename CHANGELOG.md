@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/greynet-systems/blockcheckw/compare/v0.1.3...v0.1.4) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** build-std - это булевый флаг ([dfd46ef](https://github.com/greynet-systems/blockcheckw/commit/dfd46ef26d8191ea82b17a22bf8a7079447f02a8))
+
 ## [0.1.3](https://github.com/greynet-systems/blockcheckw/compare/v0.1.2...v0.1.3) (2026-03-10)
 
 
