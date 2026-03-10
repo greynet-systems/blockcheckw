@@ -134,7 +134,7 @@ pub async fn curl_test_http(
 fn base_https_tls12_args(max_time: &str) -> Vec<&str> {
     vec![
         "curl", "-4", "--noproxy", "*",
-        "-Ss", "-A", "Mozilla/5.0",
+        "-Ss", "-I", "-A", "Mozilla/5.0",
         "--max-time", max_time,
         "--tlsv1.2", "--tls-max", "1.2",
         "-o", "/dev/null",
@@ -145,7 +145,7 @@ fn base_https_tls12_args(max_time: &str) -> Vec<&str> {
 fn base_https_tls13_args(max_time: &str) -> Vec<&str> {
     vec![
         "curl", "-4", "--noproxy", "*",
-        "-Ss", "-A", "Mozilla/5.0",
+        "-Ss", "-I", "-A", "Mozilla/5.0",
         "--max-time", max_time,
         "--tlsv1.3", "--tls-max", "1.3",
         "-o", "/dev/null",
@@ -391,5 +391,23 @@ mod tests {
     fn curl_https_tls13_args_no_connect_timeout() {
         let args = base_https_tls13_args("2");
         assert!(!args.contains(&"--connect-timeout"), "HTTPS TLS1.3 args must not contain --connect-timeout");
+    }
+
+    #[test]
+    fn curl_https_tls12_args_has_head_flag() {
+        let args = base_https_tls12_args("2");
+        assert!(args.contains(&"-I"), "HTTPS TLS1.2 args must contain -I (HEAD request)");
+    }
+
+    #[test]
+    fn curl_https_tls13_args_has_head_flag() {
+        let args = base_https_tls13_args("2");
+        assert!(args.contains(&"-I"), "HTTPS TLS1.3 args must contain -I (HEAD request)");
+    }
+
+    #[test]
+    fn curl_http_args_no_head_flag() {
+        let args = base_http_args("2");
+        assert!(!args.contains(&"-I"), "HTTP args must not contain -I");
     }
 }
