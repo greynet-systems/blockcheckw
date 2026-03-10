@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/greynet-systems/blockcheckw/compare/v0.1.7...v0.1.8) (2026-03-10)
+
+
+### Bug Fixes
+
+* **ci/cd:** ошибка скачивания musl-toolchain ([5dc0ef3](https://github.com/greynet-systems/blockcheckw/commit/5dc0ef3efe468deb49e71b330aaa854fc41a68a8))
+
 ## [0.1.7](https://github.com/greynet-systems/blockcheckw/compare/v0.1.6...v0.1.7) (2026-03-10)
 
 
