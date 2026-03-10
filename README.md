@@ -16,7 +16,7 @@
 ### Pipeline команды scan
 
 ```
-ISP detect → DNS resolve (+ spoofing check) → Baseline → Generate strategies → Run parallel → Verify → Summary
+ISP detect → DNS resolve (+ spoofing check) → Baseline → Generate strategies → Run parallel → Verify → Rank → Summary
 ```
 
 1. **ISP detect** — определяет провайдера через `curl ipinfo.io` (IP, ASN, город). Отображается как фиксированная строка под progress bar на протяжении всего сканирования
@@ -25,7 +25,7 @@ ISP detect → DNS resolve (+ spoofing check) → Baseline → Generate strategi
 4. **Generate** — генерирует все стратегии для заблокированных протоколов (2449 HTTP / 9828 TLS1.3 / 19644 TLS1.2)
 5. **Run parallel** — прогоняет стратегии параллельно через worker pool (быстрый скан, таймаут 1s). Каждый curl-запрос использует `--connect-to` для привязки к резолвленному IP
 6. **Verify** — перепроверяет найденные стратегии N раз с увеличенным таймаутом (3s), отсеивает нестабильные (false positives из-за сетевого джиттера)
-7. **Summary** — выводит только верифицированные стратегии
+7. **Ranking** — ранжирует стратегии по 4 измерениям (совместимость, простота, универсальность, производительность), выводит топ-N со звёздами и пояснениями
 
 ## Сборка
 
@@ -149,8 +149,17 @@ Blocked protocols: HTTP, HTTPS/TLS1.2
 === Summary for rutracker.org ===
   ✓ HTTPS/TLS1.3: working without bypass
   ✓ HTTP: 8 working strategies found
-    → nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:ip_ttl=4:repeats=1
-    ...
+=== Top strategies for HTTP (5 of 8) ===
+  #1  ★★★ nfqws2 --payload=http_req --lua-desync=http_unixeol
+          (universal)
+  #2  ★★★ nfqws2 --payload=http_req --lua-desync=multisplit:pos=method+2
+          (universal)
+  #3  ★★☆ nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:ip_autottl=-4,3-20:repeats=1
+  #4  ★★☆ nfqws2 --payload=http_req --lua-desync=hostfakesplit:ip_ttl=6:repeats=1
+          (TTL-dependent (hop count specific))
+  #5  ★☆☆ nfqws2 --payload=http_req --lua-desync=fake:blob=fake_default_http:tcp_md5:repeats=1 --payload=empty --out-range=<s1 --lua-desync=send:tcp_md5
+          (tcp fooling, may fail on some networks, multi-stage, complex)
+  ... and 3 more (use --top 0 to show all)
   ✗ HTTPS/TLS1.2: no working strategies found
 ```
 
@@ -184,6 +193,28 @@ Blocked protocols: HTTP, HTTPS/TLS1.2
 - Таймаут увеличен до **3 секунд** (vs 1s при скане) — строже
 - В Summary попадают только стратегии, прошедшие **все N проверок**
 
+#### Ranking стратегий
+
+**Killer feature, которой нет в vanilla blockcheck2.sh.** Вместо вываливания сотен стратегий без пояснений, blockcheckw ранжирует результаты по качеству и показывает топ-N с пояснениями.
+
+Каждая стратегия оценивается по 4 измерениям (0–100 баллов каждое):
+
+| Измерение | Вес | Что оценивает |
+|:----------|:---:|:--------------|
+| **Compatibility** | 40% | Без fooling (100) > autottl (70) > fixed TTL (50) > tcp fooling (20) |
+| **Simplicity** | 25% | 1 desync action (100) > 2 actions (70) > multi-stage (40) > complex (20) |
+| **Universality** | 20% | Без TTL-зависимости (100) > autottl (60) > fixed ip_ttl (30) |
+| **Performance** | 15% | Без overhead (100) > repeats 2–20 (70) > high repeats/multi-stage (40/20) |
+
+Итоговый score = взвешенная сумма → звёзды:
+- ★★★ = score ≥ 75 (работает везде, минимум сложности)
+- ★★☆ = score ≥ 45 (работает, но с оговорками)
+- ★☆☆ = score < 45 (последний resort)
+
+Текстовые теги поясняют слабые стороны: `universal`, `TTL-dependent`, `tcp fooling`, `multi-stage, complex`, `high packet overhead`.
+
+По умолчанию показывается топ-5. `--top 0` — полный список без обрезки.
+
 С `--verbose` видно детали по каждой стратегии:
 ```
   ✓ nfqws2 --payload=http_req --lua-desync=fake:ip_ttl=4: 3/3
@@ -200,6 +231,7 @@ Blocked protocols: HTTP, HTTPS/TLS1.2
 | `--verify-passes N` | Количество проверочных прогонов (0 = пропустить) | `3` |
 | `--verify-min N` | Минимум успешных прогонов для верификации | `= verify-passes` |
 | `--verify-timeout T` | Таймаут curl при верификации (секунды) | `3` |
+| `--top N` | Показать топ-N ранжированных стратегий (0 = все) | `5` |
 | `--verbose` | Показать результат по каждой стратегии | off |
 
 **Примеры:**
@@ -225,6 +257,12 @@ blockcheckw -w 64 scan --verify-passes 0
 
 # Мягкая верификация: 2 из 3 достаточно
 blockcheckw -w 64 scan --verify-min 2
+
+# Топ-3 лучших стратегии
+blockcheckw -w 64 scan --top 3
+
+# Все стратегии без обрезки (vanilla-стиль)
+blockcheckw -w 64 scan --top 0
 
 # 5 проходов, подробный вывод
 blockcheckw -w 64 scan --verify-passes 5 --verbose

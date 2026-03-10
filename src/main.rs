@@ -14,7 +14,7 @@ use blockcheckw::pipeline::baseline;
 use blockcheckw::pipeline::benchmark;
 use blockcheckw::pipeline::runner::run_parallel;
 use blockcheckw::pipeline::verify::{self, VerifyConfig};
-use blockcheckw::strategy::generator;
+use blockcheckw::strategy::{generator, rank};
 use blockcheckw::ui;
 
 #[derive(Parser)]
@@ -78,6 +78,10 @@ enum Command {
         /// Overall scan timeout in seconds (0 = no limit)
         #[arg(long, default_value_t = 0)]
         timeout: u64,
+
+        /// Show top N ranked strategies per protocol (0 = all)
+        #[arg(long, default_value_t = 5)]
+        top: usize,
     },
 }
 
@@ -116,6 +120,7 @@ async fn main() {
             verify_timeout,
             verbose,
             timeout,
+            top,
         }) => {
             tracing_subscriber::fmt()
                 .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
@@ -140,13 +145,13 @@ async fn main() {
                 min_passes: verify_min.unwrap_or(verify_passes),
                 curl_max_time: verify_timeout,
             };
-            run_scan(cli.workers, &domain, &protocols, dns_mode, &verify_config, verbose, timeout).await;
+            run_scan(cli.workers, &domain, &protocols, dns_mode, &verify_config, verbose, timeout, top).await;
         }
         None => run_default(cli.workers).await,
     }
 }
 
-async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode: DnsMode, verify_config: &VerifyConfig, verbose: bool, timeout_secs: u64) {
+async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode: DnsMode, verify_config: &VerifyConfig, verbose: bool, timeout_secs: u64, top_n: usize) {
     let config = Arc::new(CoreConfig {
         worker_count: workers,
         ..CoreConfig::default()
@@ -400,20 +405,32 @@ async fn run_scan(workers: usize, domain: &str, protocols: &[Protocol], dns_mode
         }
     }
 
-    // Blocked protocols results
+    // Blocked protocols results (ranked)
     for (protocol, strategies, _successes, _failures, _errors, _elapsed, unstable) in &summary {
         let proto = protocol.to_string();
         if strategies.is_empty() {
             screen.println(&ui::summary_no_strategies(&proto));
-        } else if *unstable {
-            screen.println(&ui::summary_found_unstable(&proto, strategies.len()));
-            for args in strategies {
-                screen.println(&ui::strategy_line(&args.join(" ")));
-            }
         } else {
-            screen.println(&ui::summary_found(&proto, strategies.len()));
-            for args in strategies {
-                screen.println(&ui::strategy_line(&args.join(" ")));
+            let ranked = rank::rank_strategies(strategies);
+            let total = ranked.len();
+            let show = if top_n == 0 || top_n >= total { total } else { top_n };
+
+            if *unstable {
+                screen.println(&ui::summary_found_unstable(&proto, total));
+            } else {
+                screen.println(&ui::summary_found(&proto, total));
+            }
+
+            screen.println(&ui::top_strategies_header(&proto, show, total));
+            for (i, score) in ranked.iter().take(show).enumerate() {
+                screen.println(&ui::ranked_strategy_line(i + 1, score));
+            }
+
+            if top_n > 0 && total > top_n {
+                screen.println(&format!(
+                    "  {} (use --top 0 to show all)",
+                    style(format!("... and {} more", total - top_n)).dim()
+                ));
             }
         }
     }

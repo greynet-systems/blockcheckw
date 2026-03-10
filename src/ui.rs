@@ -191,6 +191,52 @@ pub fn dns_info_line(
     )
 }
 
+/// Top strategies header: `=== Top strategies for HTTP (5 of 24) ===`
+pub fn top_strategies_header(protocol: &str, count: usize, total: usize) -> String {
+    format!(
+        "{}",
+        style(format!("=== Top strategies for {protocol} ({count} of {total}) ==="))
+            .bold()
+            .cyan()
+    )
+}
+
+/// Ranked strategy line with stars and tags.
+/// ```text
+///   #1 ★★★ nfqws2 args
+///          (universal, minimal overhead)
+/// ```
+pub fn ranked_strategy_line(rank: usize, score: &crate::strategy::rank::StrategyScore) -> String {
+    let stars = match score.stars {
+        3 => "★★★",
+        2 => "★★☆",
+        _ => "★☆☆",
+    };
+
+    let star_styled = match score.stars {
+        3 => style(stars).green().bold().to_string(),
+        2 => style(stars).yellow().bold().to_string(),
+        _ => style(stars).red().bold().to_string(),
+    };
+
+    let args_str = score.strategy_args.join(" ");
+    let mut line = format!(
+        "  #{:<2} {} nfqws2 {}",
+        rank,
+        star_styled,
+        style(&args_str).cyan(),
+    );
+
+    if !score.tags.is_empty() {
+        line.push_str(&format!(
+            "\n         ({})",
+            style(score.tags.join(", ")).dim()
+        ));
+    }
+
+    line
+}
+
 /// Layout manager for scan output. Ensures all text goes through `MultiProgress`
 /// so progress bars and vanilla output never interleave.
 /// When no TTY is detected, falls back to plain println.
