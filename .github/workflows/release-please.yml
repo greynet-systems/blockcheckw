@@ -106,12 +106,12 @@ jobs:
           - arch: ppc
             target: powerpc-unknown-linux-musl
             upx: true
-            musl_arch: powerpc
+            musl_name: powerpc-unknown-linux-musl
             linker_env: CARGO_TARGET_POWERPC_UNKNOWN_LINUX_MUSL_LINKER
           - arch: riscv64
             target: riscv64gc-unknown-linux-musl
             upx: true
-            musl_arch: riscv64
+            musl_name: riscv64-unknown-linux-musl
             linker_env: CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER
     steps:
       - uses: actions/checkout@v4
@@ -121,14 +121,14 @@ jobs:
 
       - name: Install musl-cross toolchain
         run: |
-          curl -fSL --retry 3 -o /tmp/toolchain.tgz "https://musl.cc/${{ matrix.musl_arch }}-linux-musl-cross.tgz"
-          tar xzf /tmp/toolchain.tgz -C /opt
-          echo "/opt/${{ matrix.musl_arch }}-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          curl -fSL --retry 3 -o /tmp/toolchain.tar.xz "https://github.com/cross-tools/musl-cross/releases/download/20250929/${{ matrix.musl_name }}.tar.xz"
+          tar xJf /tmp/toolchain.tar.xz -C /opt
+          echo "/opt/${{ matrix.musl_name }}/bin" >> "$GITHUB_PATH"
 
       - name: Build
         run: cargo +nightly build --release --target ${{ matrix.target }} -Zbuild-std=std,panic_abort
         env:
-          ${{ matrix.linker_env }}: ${{ matrix.musl_arch }}-linux-musl-gcc
+          ${{ matrix.linker_env }}: ${{ matrix.musl_name }}-gcc
 
       - name: Compress with UPX
         if: matrix.upx
