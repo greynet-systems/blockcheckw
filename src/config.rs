@@ -39,6 +39,8 @@ pub struct CoreConfig {
     pub nfqws2_path: String,
     pub curl_max_time: String,
     pub zapret_base: String,
+    pub nfqws2_uid: u32,
+    pub nfqws2_gid: u32,
 }
 
 impl Default for CoreConfig {
@@ -51,6 +53,8 @@ impl Default for CoreConfig {
             nfqws2_path: detect_nfqws2_path("/opt/zapret2"),
             curl_max_time: "1".to_string(),
             zapret_base: "/opt/zapret2".to_string(),
+            nfqws2_uid: 1,
+            nfqws2_gid: 3003,
         }
     }
 }

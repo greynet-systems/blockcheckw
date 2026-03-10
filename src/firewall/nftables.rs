@@ -1,7 +1,9 @@
 use crate::error::BlockcheckError;
 use crate::system::process::run_process;
 
-const CHAIN_NAME: &str = "postnat";
+const CHAIN_POSTNAT: &str = "postnat";
+const CHAIN_PREDEFRAG: &str = "predefrag";
+const CHAIN_PRENAT: &str = "prenat";
 const NFT_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy)]
@@ -23,15 +25,108 @@ async fn run_nft(args: &[&str]) -> Result<String, BlockcheckError> {
     }
 }
 
-/// Create the nftables table and postrouting chain.
+/// Build the list of nft commands for table preparation.
+///
+/// Returns 7 commands:
+/// 1. add table inet <table>
+/// 2. add chain postnat (postrouting priority 102)
+/// 3. add chain predefrag (output priority -402)
+/// 4. add rule predefrag notrack for marked packets
+/// 5. add chain prenat (prerouting priority -102)
+/// 6. add rule prenat: drop ICMP time-exceeded with ct mark
+/// 7. add rule prenat: drop ICMP time-exceeded with ct state invalid
+fn build_prepare_commands(table: &str) -> Vec<Vec<String>> {
+    let mark = format!("0x{:08X}", crate::config::DESYNC_MARK);
+    vec![
+        // 1. create table
+        vec_s(&["add", "table", "inet", table]),
+        // 2. postnat chain (postrouting)
+        vec_s(&[
+            "add", "chain", "inet", table, CHAIN_POSTNAT,
+            "{ type filter hook postrouting priority 102; }",
+        ]),
+        // 3. predefrag chain (output, before defragmentation)
+        vec_s(&[
+            "add", "chain", "inet", table, CHAIN_PREDEFRAG,
+            "{ type filter hook output priority -402; }",
+        ]),
+        // 4. predefrag rule: notrack nfqws2-marked packets
+        strs_and_owned(&[
+            "add", "rule", "inet", table, CHAIN_PREDEFRAG,
+            "meta", "nfproto", "ipv4", "mark", "and",
+        ], &[&mark, "!=0", "notrack"]),
+        // 5. prenat chain (prerouting, for autottl)
+        vec_s(&[
+            "add", "chain", "inet", table, CHAIN_PRENAT,
+            "{ type filter hook prerouting priority -102; }",
+        ]),
+        // 6. prenat rule: drop ICMP time-exceeded with desync ct mark
+        strs_and_owned(&[
+            "add", "rule", "inet", table, CHAIN_PRENAT,
+            "icmp", "type", "time-exceeded", "ct", "mark", "and",
+        ], &[&mark, "!=", "0", "drop"]),
+        // 7. prenat rule: drop ICMP time-exceeded with ct state invalid
+        vec_s(&[
+            "add", "rule", "inet", table, CHAIN_PRENAT,
+            "icmp", "type", "time-exceeded", "ct", "state", "invalid", "drop",
+        ]),
+    ]
+}
+
+fn vec_s(args: &[&str]) -> Vec<String> {
+    args.iter().map(|s| s.to_string()).collect()
+}
+
+fn strs_and_owned(prefix: &[&str], suffix: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = prefix.iter().map(|s| s.to_string()).collect();
+    v.extend(suffix.iter().map(|s| s.to_string()));
+    v
+}
+
+/// Create the nftables table and all required chains.
 pub async fn prepare_table(table: &str) -> Result<(), BlockcheckError> {
-    run_nft(&["add", "table", "inet", table]).await?;
-    run_nft(&[
-        "add", "chain", "inet", table, CHAIN_NAME,
-        "{ type filter hook postrouting priority 102; }",
-    ])
-    .await?;
+    for cmd in build_prepare_commands(table) {
+        let refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+        run_nft(&refs).await?;
+    }
     Ok(())
+}
+
+/// Build nft arguments for a per-worker postnat rule (pure function, testable without root).
+fn build_worker_rule_args(
+    table: &str,
+    sport_range: &str,
+    dport: u16,
+    qnum: u16,
+    ips: &[String],
+) -> Vec<String> {
+    let ip_set = ips.join(", ");
+    let dport_str = dport.to_string();
+    let qnum_str = qnum.to_string();
+    let mark = format!("0x{:08X}", crate::config::DESYNC_MARK);
+    let ip_expr = format!("{{ {ip_set} }}");
+
+    vec_s(&["--echo", "--handle", "add", "rule", "inet", table, CHAIN_POSTNAT])
+        .into_iter()
+        .chain(vec_s(&["meta", "nfproto", "ipv4"]))
+        .chain(vec_s(&["tcp", "sport", sport_range]))
+        .chain(vec![
+            "tcp".into(), "dport".into(), dport_str,
+        ])
+        .chain(vec![
+            "mark".into(), "and".into(), mark.clone(), "==".into(), "0".into(),
+        ])
+        .chain(vec![
+            "ip".into(), "daddr".into(), ip_expr,
+        ])
+        .chain(vec![
+            "ct".into(), "mark".into(), "set".into(),
+            "ct".into(), "mark".into(), "or".into(), mark,
+        ])
+        .chain(vec![
+            "queue".into(), "num".into(), qnum_str,
+        ])
+        .collect()
 }
 
 /// Add a per-worker nftables rule and return its handle for later removal.
@@ -42,24 +137,10 @@ pub async fn add_worker_rule(
     qnum: u16,
     ips: &[String],
 ) -> Result<RuleHandle, BlockcheckError> {
-    let ip_set = ips.join(", ");
-    let dport_str = dport.to_string();
-    let qnum_str = qnum.to_string();
-    let ip_expr = format!("{{ {ip_set} }}");
+    let args = build_worker_rule_args(table, sport_range, dport, qnum, ips);
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
-    let args: Vec<&str> = vec![
-        "--echo", "--handle",
-        "add", "rule", "inet", table, CHAIN_NAME,
-        "meta", "nfproto", "ipv4",
-        "tcp", "sport", sport_range,
-        "tcp", "dport", &dport_str,
-        "mark", "and", "0x10000000", "==", "0",
-        "ip", "daddr", &ip_expr,
-        "ct", "mark", "set", "ct", "mark", "or", "0x10000000",
-        "queue", "num", &qnum_str,
-    ];
-
-    let stdout = run_nft(&args).await?;
+    let stdout = run_nft(&refs).await?;
 
     parse_handle(&stdout)
 }
@@ -67,7 +148,7 @@ pub async fn add_worker_rule(
 /// Remove a specific rule by its handle.
 pub async fn remove_rule(table: &str, handle: RuleHandle) -> Result<(), BlockcheckError> {
     let handle_str = handle.0.to_string();
-    run_nft(&["delete", "rule", "inet", table, CHAIN_NAME, "handle", &handle_str])
+    run_nft(&["delete", "rule", "inet", table, CHAIN_POSTNAT, "handle", &handle_str])
         .await?;
     Ok(())
 }
@@ -115,5 +196,95 @@ mod tests {
         let output = "table inet zapret {\n}\nadd rule ... # handle 137\n";
         let handle = parse_handle(output).unwrap();
         assert_eq!(handle.0, 137);
+    }
+
+    #[test]
+    fn prepare_commands_include_predefrag_and_prenat() {
+        let cmds = build_prepare_commands("zapret");
+        assert_eq!(cmds.len(), 7, "expected 7 nft commands, got {}", cmds.len());
+
+        // 1. add table
+        assert_eq!(cmds[0], vec_s(&["add", "table", "inet", "zapret"]));
+
+        // 2. postnat chain
+        let postnat = cmds[1].join(" ");
+        assert!(postnat.contains("postnat"), "cmd[1] should create postnat chain");
+        assert!(postnat.contains("postrouting"), "postnat should be postrouting");
+        assert!(postnat.contains("102"), "postnat priority should be 102");
+
+        // 3. predefrag chain
+        let predefrag_chain = cmds[2].join(" ");
+        assert!(predefrag_chain.contains("predefrag"), "cmd[2] should create predefrag chain");
+        assert!(predefrag_chain.contains("output"), "predefrag should be output hook");
+        assert!(predefrag_chain.contains("-402"), "predefrag priority should be -402");
+
+        // 4. predefrag notrack rule
+        let predefrag_rule = cmds[3].join(" ");
+        assert!(predefrag_rule.contains("predefrag"), "cmd[3] should target predefrag chain");
+        assert!(predefrag_rule.contains("notrack"), "predefrag rule should include notrack");
+        assert!(predefrag_rule.contains("0x10000000"), "predefrag rule should check DESYNC_MARK");
+
+        // 5. prenat chain
+        let prenat_chain = cmds[4].join(" ");
+        assert!(prenat_chain.contains("prenat"), "cmd[4] should create prenat chain");
+        assert!(prenat_chain.contains("prerouting"), "prenat should be prerouting hook");
+        assert!(prenat_chain.contains("-102"), "prenat priority should be -102");
+
+        // 6. prenat icmp ct mark drop
+        let prenat_rule1 = cmds[5].join(" ");
+        assert!(prenat_rule1.contains("prenat"), "cmd[5] should target prenat chain");
+        assert!(prenat_rule1.contains("icmp"), "cmd[5] should match icmp");
+        assert!(prenat_rule1.contains("time-exceeded"), "cmd[5] should match time-exceeded");
+        assert!(prenat_rule1.contains("ct mark"), "cmd[5] should check ct mark");
+        assert!(prenat_rule1.contains("drop"), "cmd[5] should drop");
+
+        // 7. prenat icmp ct state invalid drop
+        let prenat_rule2 = cmds[6].join(" ");
+        assert!(prenat_rule2.contains("prenat"), "cmd[6] should target prenat chain");
+        assert!(prenat_rule2.contains("time-exceeded"), "cmd[6] should match time-exceeded");
+        assert!(prenat_rule2.contains("invalid"), "cmd[6] should match ct state invalid");
+        assert!(prenat_rule2.contains("drop"), "cmd[6] should drop");
+    }
+
+    #[test]
+    fn worker_rule_args_structure() {
+        let ips = vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()];
+        let args = build_worker_rule_args("zapret", "30000-30009", 80, 200, &ips);
+        let joined = args.join(" ");
+
+        // Should start with --echo --handle
+        assert_eq!(&args[0], "--echo");
+        assert_eq!(&args[1], "--handle");
+
+        // Should target postnat chain
+        assert!(joined.contains("postnat"), "should target postnat chain");
+
+        // Should have sport range
+        assert!(joined.contains("30000-30009"), "should include sport range");
+
+        // Should have dport
+        assert!(joined.contains("dport 80"), "should include dport");
+
+        // Should have queue num
+        assert!(joined.contains("queue num 200"), "should include queue num");
+
+        // Should have ip set
+        assert!(joined.contains("1.2.3.4, 5.6.7.8"), "should include ip set");
+
+        // Should have DESYNC_MARK
+        assert!(joined.contains("0x10000000"), "should include DESYNC_MARK");
+
+        // Should have ct mark set
+        assert!(joined.contains("ct mark set ct mark or"), "should set ct mark");
+    }
+
+    #[test]
+    fn worker_rule_args_single_ip() {
+        let ips = vec!["10.0.0.1".to_string()];
+        let args = build_worker_rule_args("zapret", "30010-30019", 443, 201, &ips);
+        let joined = args.join(" ");
+        assert!(joined.contains("10.0.0.1"), "should include single ip");
+        assert!(joined.contains("dport 443"), "should include dport 443");
+        assert!(joined.contains("queue num 201"), "should include queue 201");
     }
 }
