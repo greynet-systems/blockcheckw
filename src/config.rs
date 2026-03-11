@@ -2,7 +2,7 @@ use std::fmt;
 
 pub const PORTS_PER_WORKER: u16 = 10;
 pub const DESYNC_MARK: u32 = 0x10000000;
-pub const NFQWS2_INIT_DELAY_MS: u64 = 50;
+pub const NFQWS2_INIT_DELAY_MS: u64 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DnsMode {

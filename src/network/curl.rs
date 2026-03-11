@@ -69,12 +69,12 @@ fn local_port_args(local_port: Option<&str>) -> Vec<String> {
 }
 
 /// Build `--connect-to` args that pin curl to a specific IP for the given domain.
-/// Format: `--connect-to domain::ip:` — tells curl to connect to `ip` instead of resolving.
-pub fn connect_to_args(domain: &str, ip: Option<&str>) -> Vec<String> {
+/// Format: `--connect-to domain::ip:port` — tells curl to connect to `ip:port` instead of resolving.
+pub fn connect_to_args(domain: &str, ip: Option<&str>, port: u16) -> Vec<String> {
     match ip {
         Some(ip) => vec![
             "--connect-to".to_string(),
-            format!("{domain}::{ip}:"),
+            format!("{domain}::{ip}:{port}"),
         ],
         None => vec![],
     }
@@ -97,7 +97,7 @@ pub fn pick_random_ip(ips: &[String]) -> Option<&str> {
 fn base_http_args(max_time: &str) -> Vec<&str> {
     vec![
         "curl", "-4", "--noproxy", "*",
-        "-SsD", "-", "-A", "Mozilla/5.0",
+        "-SsD", "-", "-A", "Mozilla",
         "--max-time", max_time,
         "-o", "/dev/null",
     ]
@@ -115,7 +115,7 @@ pub async fn curl_test_http(
     let port_args = local_port_args(local_port);
     let port_refs: Vec<&str> = port_args.iter().map(|s| s.as_str()).collect();
     args.extend_from_slice(&port_refs);
-    let ct_args = connect_to_args(domain, ip);
+    let ct_args = connect_to_args(domain, ip, 80);
     let ct_refs: Vec<&str> = ct_args.iter().map(|s| s.as_str()).collect();
     args.extend_from_slice(&ct_refs);
     args.push(&url);
@@ -134,7 +134,7 @@ pub async fn curl_test_http(
 fn base_https_tls12_args(max_time: &str) -> Vec<&str> {
     vec![
         "curl", "-4", "--noproxy", "*",
-        "-Ss", "-I", "-A", "Mozilla/5.0",
+        "-Ss", "-I", "-A", "Mozilla",
         "--max-time", max_time,
         "--tlsv1.2", "--tls-max", "1.2",
         "-o", "/dev/null",
@@ -145,7 +145,7 @@ fn base_https_tls12_args(max_time: &str) -> Vec<&str> {
 fn base_https_tls13_args(max_time: &str) -> Vec<&str> {
     vec![
         "curl", "-4", "--noproxy", "*",
-        "-Ss", "-I", "-A", "Mozilla/5.0",
+        "-Ss", "-I", "-A", "Mozilla",
         "--max-time", max_time,
         "--tlsv1.3", "--tls-max", "1.3",
         "-o", "/dev/null",
@@ -164,7 +164,7 @@ pub async fn curl_test_https_tls12(
     let port_args = local_port_args(local_port);
     let port_refs: Vec<&str> = port_args.iter().map(|s| s.as_str()).collect();
     args.extend_from_slice(&port_refs);
-    let ct_args = connect_to_args(domain, ip);
+    let ct_args = connect_to_args(domain, ip, 443);
     let ct_refs: Vec<&str> = ct_args.iter().map(|s| s.as_str()).collect();
     args.extend_from_slice(&ct_refs);
     args.push(&url);
@@ -191,7 +191,7 @@ pub async fn curl_test_https_tls13(
     let port_args = local_port_args(local_port);
     let port_refs: Vec<&str> = port_args.iter().map(|s| s.as_str()).collect();
     args.extend_from_slice(&port_refs);
-    let ct_args = connect_to_args(domain, ip);
+    let ct_args = connect_to_args(domain, ip, 443);
     let ct_refs: Vec<&str> = ct_args.iter().map(|s| s.as_str()).collect();
     args.extend_from_slice(&ct_refs);
     args.push(&url);
@@ -331,14 +331,20 @@ mod tests {
     }
 
     #[test]
-    fn test_connect_to_args_with_ip() {
-        let args = connect_to_args("example.com", Some("1.2.3.4"));
-        assert_eq!(args, vec!["--connect-to", "example.com::1.2.3.4:"]);
+    fn test_connect_to_args_with_ip_http() {
+        let args = connect_to_args("example.com", Some("1.2.3.4"), 80);
+        assert_eq!(args, vec!["--connect-to", "example.com::1.2.3.4:80"]);
+    }
+
+    #[test]
+    fn test_connect_to_args_with_ip_https() {
+        let args = connect_to_args("example.com", Some("1.2.3.4"), 443);
+        assert_eq!(args, vec!["--connect-to", "example.com::1.2.3.4:443"]);
     }
 
     #[test]
     fn test_connect_to_args_without_ip() {
-        let args = connect_to_args("example.com", None);
+        let args = connect_to_args("example.com", None, 80);
         assert!(args.is_empty());
     }
 
